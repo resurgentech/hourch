@@ -1,0 +1,31 @@
+# worker.yaml.example — hourch worker
+# Default path /etc/hourch/worker.yaml (override with --config). Every key is
+# listed with its default, except the four per-host identity keys
+# (worker_id, hostname, tags, capabilities), which show illustrative values.
+# Unknown keys are a startup error.
+
+# hourchd's worker websocket. The job's HOURCH_URL is derived from it
+# (wss→https, path dropped).
+hourchd_url: wss://hourchd.lab.example/v1/worker/connect   # REQUIRED (no default)
+# Required; must equal the name of this worker's token in hourchd's
+# tokens_file.
+worker_id: node01
+# Must equal powermaster's hostname. Default: os.Hostname().
+hostname: node01.lab.example
+# Jobs whose tags are a subset of these may run here. Default: [].
+tags: [kernel]
+# Omit (default []) if the worker cannot run container jobs.
+capabilities: [docker]
+# This worker's token; mode 0600 (the worker refuses a group/other-readable file).
+token_file: /etc/hourch/worker.token
+# Each job attempt runs in work_dir/<job_id>-<attempt>, removed afterwards.
+work_dir: /opt/hourch/work
+# The only worker environment variables a job inherits (HOURCH_* never pass).
+env_allowlist: [PATH, HOME, LANG, TERM, TMPDIR]
+# Reconnect backoff: initial, doubling to max, with jitter.
+reconnect:
+  initial: 500ms
+  max: 10s
+# Log bytes held per job while hourchd is unreachable; the oldest unsent
+# chunks are dropped (with a marker line) when full.
+log_buffer: 64MiB

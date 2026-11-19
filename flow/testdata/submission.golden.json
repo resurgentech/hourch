@@ -1,0 +1,109 @@
+{
+  "jobs": [
+    {
+      "argv": [
+        "workflows/hello/hello",
+        "settings",
+        "--variant",
+        "static"
+      ],
+      "name": "settings",
+      "tags": [
+        "tiny"
+      ],
+      "timeout_seconds": 120
+    },
+    {
+      "argv": [
+        "just",
+        "package",
+        "--static",
+        "--version",
+        "${outputs.settings.version}",
+        "--buildnum=${outputs.settings.build_num}"
+      ],
+      "artifacts": [
+        "output/",
+        "build.log",
+        "build_metadata.json"
+      ],
+      "env": {
+        "BUILD_NUM": "${outputs.settings.build_num}",
+        "RUST_LOG": "info"
+      },
+      "max_attempts": 2,
+      "name": "build",
+      "tags": [
+        "kernel"
+      ],
+      "timeout_seconds": 7200,
+      "workdir": "apps/hello"
+    },
+    {
+      "argv": [
+        "workflows/hello/hello",
+        "record",
+        "--metadata",
+        "inputs/build/build_metadata.json"
+      ],
+      "inputs": [
+        {
+          "job": "build",
+          "path": "build_metadata.json"
+        }
+      ],
+      "name": "record",
+      "tags": [
+        "tiny"
+      ]
+    },
+    {
+      "argv": [
+        "workflows/hello/hello",
+        "publish",
+        "--dir",
+        "debs"
+      ],
+      "concurrency_key": "registry",
+      "depends_on": [
+        "record"
+      ],
+      "inputs": [
+        {
+          "as": "debs/",
+          "job": "build",
+          "path": "output/"
+        }
+      ],
+      "name": "publish",
+      "secrets": [
+        "PUBLISH_TOKEN",
+        "PUBLISH_HOST"
+      ],
+      "tags": [
+        "tiny"
+      ]
+    },
+    {
+      "argv": [
+        "golangci-lint",
+        "run",
+        "./..."
+      ],
+      "image": "registry.labtwo/golangci-lint:1.61",
+      "name": "lint",
+      "timeout_seconds": 2,
+      "workdir": "libs/go/hourchd/flow"
+    }
+  ],
+  "params": {
+    "repo": "staging",
+    "variant": "static",
+    "version": "0.2.0"
+  },
+  "secrets": {
+    "PUBLISH_HOST": "{\"url\":\"https://registry.example\"}",
+    "PUBLISH_TOKEN": "{\"token\":\"example-token\"}"
+  },
+  "workflow": "hello"
+}

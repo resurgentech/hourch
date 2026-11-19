@@ -1,0 +1,79 @@
+# hourchworker leaf: the hourch-worker binary. Native justfile.
+
+exename := "hourch-worker"
+set dotenv-filename := "images.env"
+
+# Image settings (environment or a gitignored images.env at the repo root; see images.env.example).
+# IMAGE_REGISTRY: registry prefix; empty builds a local-only tag.
+# IMAGE_CA_CERT: optional path to an extra CA to trust inside the image.
+registry := trim_end_match(env("IMAGE_REGISTRY", ""), "/")
+ca_cert := env("IMAGE_CA_CERT", "")
+logs_host := env("LOGS_HOST", "")
+image_name := if registry == "" { exename } else { registry + "/" + exename }
+# repository root relative to this leaf (worker)
+root := justfile_directory() / ".."
+version := `git describe --always --dirty 2>/dev/null || echo dev`
+
+# List available recipes
+default:
+  @just --list
+
+# Run unit tests (in-process fake hourchd; no docker, network or hourchd)
+test *args:
+  go test -race -count=1 {{args}} ./...
+
+# Vet every package
+vet:
+  go vet ./...
+
+# Build the hourch-worker binary into cmd/hourch-worker/
+build:
+  go build ./...
+  go build -ldflags "-X github.com/resurgentech/hourch/worker.Version={{version}}" -o cmd/{{exename}}/{{exename}} ./cmd/{{exename}}
+
+# Build the tiny-worker container image (context: repo root)
+image tag="latest":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  stage=cmd/{{exename}}/extra-ca
+  ca="{{ca_cert}}"
+  if [ -n "$ca" ]; then
+    [ -f "$ca" ] || { echo "IMAGE_CA_CERT=$ca: no such file" >&2; exit 1; }
+    cp "$ca" "$stage/extra-ca.crt"
+    trap 'rm -f "{{justfile_directory()}}/'"$stage"'/extra-ca.crt"' EXIT
+  fi
+  cd "{{root}}"
+  docker build --build-arg VERSION={{version}} -f worker/cmd/{{exename}}/Dockerfile -t {{image_name}}:{{tag}} .
+
+# Smoke-test the built image: every tool the pacman-release jobs need, plus IMAGE_CA_CERT when set
+image-smoke tag="latest":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  img={{image_name}}:{{tag}}
+  run() { docker run --rm --entrypoint "$@"; }
+  for c in "hourch-worker --version" "repo-add --version" "vercmp 1 2" "bsdtar --version" "gpg --version" "ssh -V" "pacman --version"; do
+    echo "== $c"
+    # shellcheck disable=SC2086
+    docker run --rm --entrypoint "${c%% *}" "$img" ${c#* }
+  done
+  ca="{{ca_cert}}"
+  if [ -n "$ca" ]; then
+    cn=$(openssl x509 -in "$ca" -noout -subject -nameopt multiline | sed -n 's/^ *commonName *= *//p' | head -n1)
+    [ -n "$cn" ] || { echo "cannot read a commonName from $ca" >&2; exit 1; }
+    echo "== trust list | grep '$cn'"
+    docker run --rm --entrypoint sh "$img" -c 'trust list | grep -F -- "$1"' _ "$cn"
+  else
+    echo "== IMAGE_CA_CERT unset: extra CA check skipped"
+  fi
+
+# Push the image to IMAGE_REGISTRY (fails when it is empty)
+push tag="latest": _need-registry (image tag)
+  docker push {{image_name}}:{{tag}}
+
+_need-registry:
+  #!/usr/bin/env bash
+  [ -n "{{registry}}" ] || { echo "IMAGE_REGISTRY is empty: set it in the environment or images.env to push" >&2; exit 1; }
+
+# Run the worker locally against a config file
+run config="worker.yaml": build
+  ./cmd/{{exename}}/{{exename}} --config {{config}}

@@ -1,0 +1,61 @@
+# config.yaml.example — hourchd
+# Every key with its default. Unknown keys are a startup error.
+# Durations are Go duration strings ("45s", "2h") or whole days ("90d").
+# Sizes are bytes, optionally with a unit (KiB, MiB, GiB, TiB).
+listen: ":8093"
+state_dir: /var/lib/hourchd                  # state.db, live logs
+tokens_file: /etc/hourchd/tokens.yaml        # submitters: {name: token}, workers: {worker id: token}; mode 0600
+log_level: info                              # debug | info | warn | error
+
+minio:
+  endpoint: minio.lab.example:9000           # REQUIRED (no default)
+  bucket: hourch
+  use_ssl: false
+  access_key_env: HOURCHD_MINIO_ACCESS_KEY   # names of environment variables, not values
+  secret_key_env: HOURCHD_MINIO_SECRET_KEY
+
+# Run secrets have no settings: the key is generated at startup and held only
+# in memory (a restart loses every stored secret). A `secrets:` section is a
+# startup error.
+
+dispatch:
+  heartbeat: 10s                             # whole seconds; sent in welcome.heartbeat_seconds
+  lease: 45s                                 # whole seconds; any worker message renews it
+  accept_timeout: 10s                        # assign -> accept; a miss requeues without using an attempt
+  reaper_interval: 5s                        # lease lapse, accept timeout and job timeout checks
+  unschedulable_timeout: 30m                 # fail a ready job no connected worker (idle or busy) could run for this long (no_worker); 0s disables
+
+logs:
+  chunk_max_bytes: 65536                     # largest log chunk a worker sends
+  chunk_max_delay: 250ms                     # worker flush delay (advisory for hourchd)
+
+limits:
+  max_jobs_per_run: 200
+  output_value_bytes: 4096
+  context_max_bytes: 2GiB
+  artifact_max_bytes: 4GiB
+  default_timeout: 2h                        # job timeout when the submission sets none
+
+retention:
+  rows: 90d                                  # runs, jobs, events, idle workers, contexts no kept run uses, backups
+  logs: 90d
+  artifacts: 90d
+  prune_interval: 1h
+
+backup:
+  interval: 24h                              # VACUUM INTO, then upload to MinIO
+  minio_prefix: backups/hourchd/
+
+powerwarden:                                 # demand and worker liveness publisher
+  url: https://powerwarden.lab.example       # default "" (disabled; healthz/stats: powerwarden "disabled")
+  token_file: /etc/hourchd/powerwarden.token # powerwarden's bearer token named "hourchd"; mode 0600
+  refresh: 15s                               # re-PUT open demands and live workers, delete stale hourchd demands
+                                             # (demand lease 3600s; worker lease 6 x refresh, 15s..300s)
+
+events:
+  ring_size: 1000                            # SSE resume window
+  heartbeat: 15s                             # SSE comment heartbeat
+
+ui:                                          # web UI at /ui; / redirects to /ui/runs
+  enabled: true
+  htpasswd_file: /etc/hourchd/ui.htpasswd    # htpasswd -B (bcrypt only)

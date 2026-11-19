@@ -1,0 +1,20 @@
+go 1.25.0
+
+use (
+	./api
+	./daemon
+	./flow
+	./protocol
+	./worker
+)
+
+// Intra-repo requires name a tag (v0.1.0). These versioned replaces point that
+// exact version at the workspace copy, so in-repo work needs no published tag.
+// When an intra-repo require moves to a new version, move its replace with it.
+replace github.com/resurgentech/hourch/api v0.1.0 => ./api
+
+replace github.com/resurgentech/hourch/flow v0.1.0 => ./flow
+
+replace github.com/resurgentech/hourch/protocol v0.1.0 => ./protocol
+
+replace github.com/resurgentech/hourch/worker v0.1.0 => ./worker

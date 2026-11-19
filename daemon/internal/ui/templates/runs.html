@@ -1,0 +1,32 @@
+{{define "content"}}
+<h1>Runs</h1>
+<form class="row" method="get" action="/ui/runs">
+  <label>Workflow <input name="workflow" value="{{.Workflow}}" placeholder="any"></label>
+  <label>Status
+    <select name="status">
+      <option value="" {{if eq .Status ""}}selected{{end}}>any</option>
+      {{$cur := .Status}}{{range .Statuses}}<option value="{{.}}" {{if eq . $cur}}selected{{end}}>{{.}}</option>{{end}}
+    </select>
+  </label>
+  <button type="submit">Filter</button>
+</form>
+<table>
+<thead><tr><th>Run</th><th>Status</th><th>Jobs</th><th>Submitter</th><th>Age</th><th>Duration</th><th>Id</th></tr></thead>
+<tbody>
+{{range .Runs}}
+<tr>
+  <td><a href="/ui/runs/{{pe .Id}}">{{.Workflow}} #{{.Number}}</a></td>
+  <td><span class="st st-{{.Status}}">{{.Status}}</span></td>
+  <td class="counts">{{with .JobCounts}}{{if .Succeeded}}<span class="st-succeeded">{{.Succeeded}} ok</span> {{end}}{{if .Leased}}<span class="st-leased">{{.Leased}} running</span> {{end}}{{if .Ready}}<span class="st-ready">{{.Ready}} ready</span> {{end}}{{if .Pending}}<span class="st-pending">{{.Pending}} pending</span> {{end}}{{if .Failed}}<span class="st-failed">{{.Failed}} failed</span> {{end}}{{if .Cancelled}}<span class="st-cancelled">{{.Cancelled}} cancelled</span>{{end}}{{end}}</td>
+  <td>{{.SubmittedBy}}</td>
+  <td>{{.Age}}</td>
+  <td>{{.Duration}}</td>
+  <td class="muted mono">{{.Id}}</td>
+</tr>
+{{else}}
+<tr><td colspan="7" class="muted">No runs.</td></tr>
+{{end}}
+</tbody>
+</table>
+{{if .Older}}<p><a href="{{.Older}}">Older runs →</a></p>{{end}}
+{{end}}

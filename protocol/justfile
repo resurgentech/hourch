@@ -1,0 +1,13 @@
+# hourchdprotocol leaf. Go types for specs/hourchd/worker-protocol.schema.json. Native justfile.
+
+# List available recipes
+default:
+  @just --list
+
+# Run tests (round trips, schema validation of every message, schema/Go parity)
+test:
+  go test ./...
+
+# Vet the module
+vet:
+  go vet ./...

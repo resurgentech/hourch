@@ -1,0 +1,21 @@
+{{define "content"}}
+<h1>Workers</h1>
+<table>
+<thead><tr><th>Id</th><th>Hostname</th><th>Tags</th><th>Capabilities</th><th>State</th><th>Current job</th><th>Last seen</th></tr></thead>
+<tbody>
+{{range .Workers}}
+<tr {{if not .Connected}}class="expired"{{end}}>
+  <td>{{.Id}}</td>
+  <td>{{.Hostname}}</td>
+  <td>{{join .Tags ", "}}</td>
+  <td>{{range .Capabilities}}{{.}} {{end}}</td>
+  <td>{{if .Connected}}<span class="ok">connected</span>{{else}}disconnected{{end}}</td>
+  <td>{{with .CurrentJob}}<a href="/ui/jobs/{{pe .}}">{{.}}</a>{{end}}</td>
+  <td>{{ts .LastSeen}} ({{since .LastSeen}} ago)</td>
+</tr>
+{{else}}
+<tr><td colspan="7" class="muted">No workers.</td></tr>
+{{end}}
+</tbody>
+</table>
+{{end}}

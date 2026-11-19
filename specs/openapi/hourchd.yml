@@ -1,0 +1,1740 @@
+openapi: 3.0.3
+info:
+  title: hourchd API
+  description: |
+    Job scheduler and artifact broker for lab builds (see docs/DESIGN-hourchd.md).
+    Submitters (workflow binaries on an operator machine) upload a context
+    tarball and submit a run: a dependency graph of jobs. hourchd owns all job
+    state in SQLite, pushes jobs to workers over one websocket per worker
+    (`GET /v1/worker/connect`, messages in
+    `specs/hourchd/worker-protocol.schema.json`), and is the only MinIO client:
+    contexts, artifacts and logs stream through it.
+
+    Conventions:
+    - Request and response bodies are `application/json` unless a route says
+      otherwise. Contexts, artifacts and full logs are streamed
+      (`application/octet-stream` / `text/plain`); live log tail and the
+      change feed are server-sent events.
+    - Unknown JSON fields in a request body are rejected with 400 `bad_request`.
+    - Run ids and job ids are ULIDs (26 Crockford base32 characters). Lists
+      sorted by id are in creation order.
+    - Durations are integer seconds in fields named `*_seconds`.
+    - Every 4xx and 5xx response with a body carries the `Error` body.
+    - Authentication: every `/v1` route except `GET /v1/healthz` requires
+      `Authorization: Bearer <token>`. Tokens are named in `tokens_file`.
+      There are three kinds:
+        - **submitter/operator tokens** (`bearerAuth`): every route outside
+          `/v1/worker/`, except `PUT /v1/builds/...`.
+        - **worker tokens** (`bearerAuth`, the token's name is the worker id):
+          only `/v1/worker/` routes. A worker token on any other route, or a
+          submitter token on a `/v1/worker/` route, is 403 `forbidden`.
+        - **job tokens** (`jobToken`, `HOURCH_JOB_TOKEN`): minted per
+          assignment, valid only while that job is `leased`, and accepted only
+          on `POST /v1/counters/{name}/next` and `PUT /v1/builds/...`.
+      The 401 body is identical for a missing, wrong or expired token.
+    - Secret values are write-only: they are accepted in `POST /v1/runs` and
+      `POST /v1/runs/{id}/retry` and never returned by any route. Views carry
+      secret names only.
+    - Secret storage and lifetime: a run's values are sealed (AES-256-GCM)
+      into one object-store object owned by hourchd, under a key generated
+      when hourchd starts and held only in its memory. **An hourchd restart
+      loses every stored secret**: at startup hourchd deletes the old
+      objects and fails every `pending`/`ready` job that names a secret with
+      `secret_unavailable` (leased jobs keep running; their workers already
+      hold the values). A run's secrets are deleted as soon as every job that
+      names a secret has succeeded; a failed or cancelled run keeps them for
+      a retry until hourchd restarts or the run is pruned.
+      `Stats.runs_holding_secrets` counts what a restart would lose.
+    - Bounds below (`maxItems`, sizes) are the `config.yaml.example` defaults;
+      the server enforces its configured values.
+
+    The web UI (`/ui`, HTML, basic auth) is not part of this spec.
+  version: 0.1.0
+servers:
+  - url: http://localhost:8093
+    description: local default; use your deployment's URL
+security:
+  - bearerAuth: []
+tags:
+  - name: contexts
+  - name: runs
+  - name: jobs
+  - name: workers
+  - name: worker
+    description: Routes for worker processes, authenticated with a worker token.
+  - name: counters
+  - name: builds
+  - name: events
+  - name: meta
+paths:
+  /v1/contexts:
+    post:
+      tags: [contexts]
+      summary: Upload a context tarball (content-addressed, deduped)
+      description: |
+        The body is a zstd-compressed tarball of the submitter's tree, streamed
+        to MinIO without buffering. The server hashes the body; the returned
+        `context_ref` is `sha256:<hex>`. Uploading bytes that are already
+        stored returns 200 with `created: false` and does not store a second
+        copy. `X-Sha256`, when sent, must match the body or the upload is
+        discarded with 400 `checksum_mismatch`. Bodies over
+        `limits.context_max_bytes` (2 GiB) are 413 `too_large`.
+      operationId: uploadContext
+      parameters:
+        - $ref: '#/components/parameters/XSha256Optional'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: Already stored (deduped)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContextUpload'
+        '201':
+          description: Stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContextUpload'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '500':
+          $ref: '#/components/responses/Internal'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/runs:
+    get:
+      tags: [runs]
+      summary: List runs, newest first
+      description: |
+        Keyset pagination: pass the last `id` of a page as `before` to get the
+        next (older) page.
+      operationId: listRuns
+      parameters:
+        - name: workflow
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/WorkflowName'
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/RunStatus'
+        - $ref: '#/components/parameters/Limit'
+        - name: before
+          in: query
+          required: false
+          description: Return runs whose id sorts before this run id.
+          schema:
+            $ref: '#/components/schemas/Ulid'
+      responses:
+        '200':
+          description: Runs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RunSummary'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [runs]
+      summary: Submit a run (validates the graph)
+      description: |
+        Validation, all before anything is stored: job names unique;
+        `depends_on`, `inputs[].job` and every `${outputs.<job>.<key>}`
+        placeholder in `argv`/`env` name a job in this run; the graph is
+        acyclic; every name in a job's `secrets` is a key of the run's
+        `secrets`; `context_ref` (when set) is stored; at most
+        `limits.max_jobs_per_run` (200) jobs; every job is satisfiable. A
+        graph error is 422 `invalid_graph`, a named secret without a value
+        422 `missing_secret`, an unknown `context_ref` 422
+        `context_not_found`, a job no worker can ever run 422
+        `unsatisfiable`.
+
+        Satisfiable: a job needs a worker whose tags include all of the
+        job's `tags`, plus the `docker` capability when it has an `image`
+        (the dispatch rule). It is satisfiable when some worker hourchd has
+        ever seen (any row of `GET /v1/workers`' table, connected or not,
+        until `retention.rows` prunes it) has those tags and capabilities,
+        or, for a job without an `image` only, when some powerwarden host
+        that is neither locked nor excluded has non-empty tags including
+        the job's (a host never seen as a worker has unknown capabilities,
+        so it does not satisfy an `image` job). hourchd reads powerwarden's
+        hosts only when the workers do not satisfy a job, and caches them
+        for a few seconds. When powerwarden is disabled or unreachable only
+        the workers are checked, and the message says powered-off hosts
+        could not be checked. The `unsatisfiable` message has one line per
+        failing job, e.g. `job "build:hello" needs tags [kernel] +
+        docker; known workers offer [tiny]; powerwarden hosts offer [kernel]
+        (no docker known)`.
+
+        `validate_only=true` runs every check above (the `context_ref` check
+        only when one is given) and stores nothing: no run, no secrets
+        object, no events. It answers 200 `{"valid": true}`, or the same
+        4xx the real submission would.
+
+        A job's effective dependencies are `depends_on` plus every job named
+        in its `inputs` and output placeholders; views show the effective set.
+        Jobs with no dependencies start `ready`, the rest `pending`. The run
+        gets the next `number` for its workflow. Secret values are sealed into
+        an object owned by hourchd (only when some job names a secret) and
+        kept until every job that names a secret has succeeded, or hourchd
+        restarts (see "Secret storage and lifetime" above).
+      operationId: submitRun
+      parameters:
+        - name: validate_only
+          in: query
+          required: false
+          description: Check the submission without storing anything (a server-side dry run).
+          schema:
+            type: boolean
+            default: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunSubmission'
+      responses:
+        '200':
+          description: '`validate_only=true`: the submission passed every check; nothing was stored.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationResult'
+        '201':
+          description: The stored run
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Run'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '500':
+          $ref: '#/components/responses/Internal'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/runs/{id}:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    get:
+      tags: [runs]
+      summary: Get one run with its jobs
+      operationId: getRun
+      responses:
+        '200':
+          description: Run
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Run'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/workflows/{workflow}/runs/{number}:
+    parameters:
+      - name: workflow
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/WorkflowName'
+      - name: number
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+    get:
+      tags: [runs]
+      summary: Get a run by workflow and run number
+      operationId: getRunByNumber
+      responses:
+        '200':
+          description: Run
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Run'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/runs/{id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    post:
+      tags: [runs]
+      summary: Cancel a run (every non-terminal job)
+      description: |
+        `pending` and `ready` jobs become `cancelled`; `leased` jobs get a
+        `cancel` message and become `cancelled` when the worker reports the
+        result (or the lease lapses). The run becomes `cancelled`; its stored
+        secrets are kept so a retry can reuse them (until hourchd restarts or
+        the run is pruned). Cancelling a terminal run is a no-op that returns
+        the run.
+      operationId: cancelRun
+      responses:
+        '200':
+          description: The run after the change
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Run'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/runs/{id}/retry:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    post:
+      tags: [runs]
+      summary: Submit a new run with the same graph and context
+      description: |
+        Creates a new run (new id, next `number`) from the stored graph,
+        params and `context_ref` of `{id}`. While the original run's stored
+        secrets exist (it failed or was cancelled, and hourchd has not
+        restarted since it was submitted) the new run reuses them, re-sealed
+        into its own object; values in `secrets` override them. Once they are
+        gone (hourchd restarted, or every secret-using job succeeded) every
+        secret a job needs must be sent in `secrets`, or 422
+        `missing_secret` whose message says the stored secrets are gone and
+        the workflow binary must be re-run (or the values sent). A context
+        already pruned is 422 `context_not_found`. The new run is checked
+        for satisfiability as `POST /v1/runs` is (422 `unsatisfiable`).
+      operationId: retryRun
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetryRequest'
+      responses:
+        '201':
+          description: The new run
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Run'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/jobs/{id}:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    get:
+      tags: [jobs]
+      summary: Get one job with outputs, attempts and artifacts
+      operationId: getJob
+      responses:
+        '200':
+          description: Job
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/jobs/{id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    post:
+      tags: [jobs]
+      summary: Cancel one job
+      description: |
+        As for a run, but one job. Jobs that depend on it become `cancelled`.
+        Cancelling a terminal job is a no-op that returns the job.
+      operationId: cancelJob
+      responses:
+        '200':
+          description: The job after the change
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/jobs/{id}/log:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    get:
+      tags: [jobs]
+      summary: Full log of one attempt
+      description: |
+        Plain text, stdout and stderr interleaved in arrival order, secret
+        values redacted to `***`. Served from the live file while the job is
+        leased and from MinIO once it finished. 404 `not_found` when the
+        attempt never started.
+      operationId: getJobLog
+      parameters:
+        - $ref: '#/components/parameters/Attempt'
+      responses:
+        '200':
+          description: Log text
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/jobs/{id}/log/stream:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    get:
+      tags: [jobs]
+      summary: Live log tail (server-sent events)
+      description: |
+        `text/event-stream`. Each event is one SSE message:
+
+        ```
+        id: <offset>
+        event: log | end
+        data: <one JSON object: LogChunkEvent | LogEndEvent>
+        ```
+
+        The stream first replays the attempt's log from the start (or from
+        `Last-Event-ID`), then follows it. `offset` is the byte offset in the
+        attempt's log after the chunk and is also the SSE `id`; a client
+        reconnecting with `Last-Event-ID: <offset>` resumes after it. When the
+        attempt ends the server sends one `end` event and closes the stream;
+        for a finished attempt that is immediately after the replay. A comment
+        heartbeat (`: heartbeat`) is sent every `events.heartbeat` (15s).
+      operationId: streamJobLog
+      parameters:
+        - $ref: '#/components/parameters/Attempt'
+        - name: Last-Event-ID
+          in: header
+          required: false
+          description: The `offset` of the last chunk the client saw; resume after it.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+      responses:
+        '200':
+          description: Event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE stream; each `data` line is a JSON `LogStreamEvent`.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/jobs/{id}/artifacts:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    get:
+      tags: [jobs]
+      summary: List a job's uploaded artifacts
+      operationId: listJobArtifacts
+      responses:
+        '200':
+          description: Artifacts, sorted by path
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Artifact'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/jobs/{id}/artifacts/{path}:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+      - $ref: '#/components/parameters/ArtifactPath'
+    get:
+      tags: [jobs]
+      summary: Download one artifact (a directory prefix comes as a tarball)
+      description: |
+        A `path` equal to an uploaded artifact streams that file with
+        `X-Sha256`. A `path` ending in `/` that prefixes uploaded artifacts
+        streams an uncompressed tar of them (`application/x-tar`), paths
+        relative to the prefix.
+      operationId: getJobArtifact
+      responses:
+        '200':
+          description: Artifact bytes
+          headers:
+            X-Sha256:
+              description: Hex SHA-256 of the body (single files only).
+              schema:
+                type: string
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+            application/x-tar:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/workers:
+    get:
+      tags: [workers]
+      summary: Connected and recently seen workers
+      description: Connected workers first, then disconnected ones seen within `retention.rows`, by id.
+      operationId: listWorkers
+      responses:
+        '200':
+          description: Workers
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Worker'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/counters/{name}/next:
+    parameters:
+      - $ref: '#/components/parameters/CounterName'
+    post:
+      tags: [counters]
+      summary: Atomically increment a counter and return the new value
+      description: |
+        Creates the counter at 0 if it does not exist, then increments it, so
+        the first value is 1. Accepts a job token (`HOURCH_JOB_TOKEN`) or a
+        submitter/operator token.
+      operationId: nextCounter
+      security:
+        - bearerAuth: []
+        - jobToken: []
+      responses:
+        '200':
+          description: The new value
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Counter'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/builds:
+    get:
+      tags: [builds]
+      summary: List build metadata, newest build number first
+      operationId: listBuilds
+      parameters:
+        - name: type
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/BuildType'
+        - name: flavour
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/Flavour'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Builds
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Build'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/builds/{type}/{flavour}/{num}:
+    parameters:
+      - name: type
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/BuildType'
+      - name: flavour
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/Flavour'
+      - name: num
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+    put:
+      tags: [builds]
+      summary: Store build metadata (job token only)
+      description: |
+        The body is your build metadata (any JSON object), as your
+        workflow's record job builds it; hourchd stores it verbatim.
+        `run_id` and `job_id` are taken from the job token. A second PUT for
+        the same key replaces the row (a retried `record` job is idempotent).
+      operationId: putBuild
+      security:
+        - jobToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BuildBody'
+      responses:
+        '200':
+          description: The stored build
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Build'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+  /v1/events:
+    get:
+      tags: [events]
+      summary: Server-sent event stream of run, job and worker changes
+      description: |
+        `text/event-stream`. Each event is one SSE message:
+
+        ```
+        id: <seq>
+        event: run | job | worker | resync
+        data: <one JSON object: RunEvent | JobEvent | WorkerEvent | ResyncEvent>
+        ```
+
+        `seq` is monotonically increasing and is also the SSE `id`. Resume
+        works as in powermaster: a client reconnecting with `Last-Event-ID`
+        gets every event still in the ring (`events.ring_size`, default 1000)
+        or a `resync` event telling it to re-read the list routes. A comment
+        heartbeat (`: heartbeat`) is sent every `events.heartbeat` (15s).
+      operationId: streamEvents
+      parameters:
+        - name: Last-Event-ID
+          in: header
+          required: false
+          description: The `seq` of the last event the client saw; resume after it.
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE stream; each `data` line is a JSON `Event` (see components.schemas.Event).
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/healthz:
+    get:
+      tags: [meta]
+      summary: Liveness and readiness
+      description: |
+        No authentication. 200 when serving with SQLite open, else 503.
+        Reports the MinIO and powerwarden connections and how many runs hold
+        secrets (lost if hourchd restarts). Returns no job data.
+      operationId: getHealthz
+      security: []
+      responses:
+        '200':
+          description: Serving with SQLite open
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Healthz'
+        '503':
+          description: Not serving (SQLite not open)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Healthz'
+  /v1/stats:
+    get:
+      tags: [meta]
+      summary: Queue and dispatch counters for the UI header
+      operationId: getStats
+      responses:
+        '200':
+          description: Stats
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Stats'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/worker/connect:
+    get:
+      tags: [worker]
+      summary: Upgrade to the worker websocket
+      description: |
+        Websocket upgrade (`Connection: Upgrade`, `Upgrade: websocket`) with a
+        worker token. The token's name is the worker id; the first message
+        must be `hello` with that `worker_id`, else the socket is closed.
+        Every message in either direction is a JSON text frame defined in
+        `specs/hourchd/worker-protocol.schema.json`. A newer connection for
+        the same worker id closes the older one.
+      operationId: connectWorker
+      responses:
+        '101':
+          description: Switching protocols; the socket carries worker-protocol messages.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/worker/jobs/{id}/context:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    get:
+      tags: [worker]
+      summary: Stream the run's context tarball
+      description: |
+        Only while job `{id}` is `leased` to the calling worker, else 409
+        `not_leased`. 404 `not_found` when the run has no context.
+      operationId: getWorkerJobContext
+      responses:
+        '200':
+          description: The tarball as uploaded
+          headers:
+            X-Sha256:
+              description: Hex SHA-256 of the body.
+              schema:
+                type: string
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/NotLeased'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/worker/jobs/{id}/inputs/{upstream_job}/{path}:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+      - name: upstream_job
+        in: path
+        required: true
+        description: Name of a job in the same run that job `{id}` lists in `inputs`.
+        schema:
+          $ref: '#/components/schemas/JobName'
+      - $ref: '#/components/parameters/ArtifactPath'
+    get:
+      tags: [worker]
+      summary: Stream an upstream artifact (a directory prefix comes as a tarball)
+      description: |
+        Only while job `{id}` is `leased` to the calling worker (409
+        `not_leased`) and `{upstream_job}`/`{path}` is one of its `inputs`
+        (404 `not_found`). Same body rules as `GET /v1/jobs/{id}/artifacts/{path}`.
+      operationId: getWorkerJobInput
+      responses:
+        '200':
+          description: Artifact bytes
+          headers:
+            X-Sha256:
+              description: Hex SHA-256 of the body (single files only).
+              schema:
+                type: string
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+            application/x-tar:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/NotLeased'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /v1/worker/jobs/{id}/artifacts/{path}:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+      - $ref: '#/components/parameters/ArtifactPath'
+    put:
+      tags: [worker]
+      summary: Stream one artifact file up
+      description: |
+        One regular file per request; a declared directory artifact
+        (`output/`) is uploaded as one PUT per file under it. Only while job
+        `{id}` is `leased` to the calling worker (409 `not_leased`), and
+        `{path}` must equal or lie under one of the job's declared
+        `artifacts` (400 `bad_request`). The body streams to MinIO; if its
+        SHA-256 differs from `X-Sha256` the object is discarded with 400
+        `checksum_mismatch`. A second PUT of the same path replaces it.
+        Bodies over `limits.artifact_max_bytes` (4 GiB) are 413 `too_large`.
+      operationId: putWorkerJobArtifact
+      parameters:
+        - name: X-Sha256
+          in: header
+          required: true
+          description: Hex SHA-256 of the body.
+          schema:
+            $ref: '#/components/schemas/Sha256'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: Stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Artifact'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/NotLeased'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Named token from `tokens_file`: a submitter/operator token (every
+        route outside `/v1/worker/`) or a per-worker token (only
+        `/v1/worker/` routes; its name is the worker id).
+    jobToken:
+      type: http
+      scheme: bearer
+      description: |
+        `HOURCH_JOB_TOKEN`, minted per assignment and sent to the worker in
+        `assign.job_token`. Valid only while that job is `leased`; accepted
+        only on `POST /v1/counters/{name}/next` and `PUT /v1/builds/...`.
+  parameters:
+    RunId:
+      name: id
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Ulid'
+    JobId:
+      name: id
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Ulid'
+    ArtifactPath:
+      name: path
+      in: path
+      required: true
+      description: |
+        Relative artifact path. It may contain `/`: clients percent-encode it
+        as `%2F` (the generated client does); the server also accepts raw
+        slashes and matches the rest of the URL. No leading `/`, no `.` or
+        `..` segments, at most 1024 bytes.
+      schema:
+        $ref: '#/components/schemas/ArtifactPath'
+    CounterName:
+      name: name
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/CounterName'
+    Attempt:
+      name: attempt
+      in: query
+      required: false
+      description: Attempt number (1-based). Omitted means the latest attempt.
+      schema:
+        type: integer
+        minimum: 1
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 500
+        default: 50
+    XSha256Optional:
+      name: X-Sha256
+      in: header
+      required: false
+      description: Hex SHA-256 of the body; checked when present.
+      schema:
+        $ref: '#/components/schemas/Sha256'
+  responses:
+    BadRequest:
+      description: '`bad_request`: malformed body or parameter, unknown field, pattern or bound violation; `checksum_mismatch` on uploads.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: '`unauthorized`: missing, wrong or expired token (identical body for each).'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: '`forbidden`: a valid token of the wrong kind for this route.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: '`not_found`: unknown run, job, workflow run number, artifact, log attempt or input.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotLeased:
+      description: '`not_leased`: the job is not currently leased to the calling worker.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    TooLarge:
+      description: '`too_large`: body over the configured limit.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unprocessable:
+      description: '`invalid_graph`, `missing_secret`, `context_not_found` or `unsatisfiable`.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Internal:
+      description: '`internal`: unexpected server error (details are logged, not returned).'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unavailable:
+      description: '`unavailable`: the object store (MinIO) could not be reached.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Error:
+      type: object
+      description: Body of every 4xx and 5xx response.
+      required: [error, message]
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorCode'
+        message:
+          type: string
+      example:
+        error: invalid_graph
+        message: 'job "record": depends_on names unknown job "biuld"'
+    ValidationResult:
+      type: object
+      description: Answer of `POST /v1/runs?validate_only=true` when the submission is valid.
+      required: [valid]
+      properties:
+        valid:
+          type: boolean
+          description: Always true (an invalid submission is a 4xx `Error`).
+    ErrorCode:
+      type: string
+      description: |
+        - `bad_request` (400): malformed request.
+        - `checksum_mismatch` (400): upload body does not match `X-Sha256`.
+        - `unauthorized` (401): missing, wrong or expired token.
+        - `forbidden` (403): token kind not accepted on this route.
+        - `not_found` (404): unknown resource.
+        - `not_leased` (409): worker data route for a job not leased to the caller.
+        - `too_large` (413): body over a configured limit.
+        - `invalid_graph` (422): duplicate names, unknown references, cycle, too many jobs.
+        - `missing_secret` (422): a job names a secret the submission did not send (on retry: that
+          neither the request nor the original run's stored secrets supply; the stored secrets do
+          not survive an hourchd restart).
+        - `context_not_found` (422): `context_ref` is not stored.
+        - `unsatisfiable` (422): some job needs tags (and the `docker` capability for an `image`)
+          that no worker hourchd has ever seen offers, nor (for jobs without an `image`) any
+          unlocked, non-excluded powerwarden host; the message lists each such job.
+        - `internal` (500): unexpected server error.
+        - `unavailable` (503): object store unreachable.
+      enum:
+        - bad_request
+        - checksum_mismatch
+        - unauthorized
+        - forbidden
+        - not_found
+        - not_leased
+        - too_large
+        - invalid_graph
+        - missing_secret
+        - context_not_found
+        - unsatisfiable
+        - internal
+        - unavailable
+    Ulid:
+      type: string
+      description: ULID (Crockford base32, upper case).
+      pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+      example: 01JBF6Q9W2X7K3M4N5P6Q7R8S9
+    Sha256:
+      type: string
+      pattern: '^[0-9a-f]{64}$'
+    ContextRef:
+      type: string
+      description: '`sha256:<hex>` of the uploaded tarball, as returned by `POST /v1/contexts`.'
+      pattern: '^sha256:[0-9a-f]{64}$'
+    WorkflowName:
+      type: string
+      pattern: '^[A-Za-z0-9_.-]{1,64}$'
+      example: hello
+    JobName:
+      type: string
+      description: Unique within a run, e.g. `build` or `build:hello`.
+      pattern: '^[A-Za-z0-9_.:-]{1,128}$'
+    Tag:
+      type: string
+      pattern: '^[A-Za-z0-9_.-]{1,64}$'
+    Tags:
+      type: array
+      description: A worker can take the job when its tags are a superset. Zero tags means any worker.
+      maxItems: 32
+      items:
+        $ref: '#/components/schemas/Tag'
+    SecretName:
+      type: string
+      description: Also the environment variable name the job sees.
+      pattern: '^[A-Za-z_][A-Za-z0-9_]{0,127}$'
+    EnvName:
+      type: string
+      pattern: '^[A-Za-z_][A-Za-z0-9_]{0,127}$'
+    ArtifactPath:
+      type: string
+      description: Relative path; a trailing `/` names a directory. No leading `/`, no `.` or `..` segments.
+      minLength: 1
+      maxLength: 1024
+      pattern: '^[^/]'
+    CounterName:
+      type: string
+      pattern: '^[A-Za-z0-9_.:-]{1,200}$'
+      example: build:hello:debian12_amd64
+    BuildType:
+      type: string
+      pattern: '^[A-Za-z0-9_.-]{1,64}$'
+      example: kernel
+    Flavour:
+      type: string
+      description: '`distro_arch[_flavour]`, as your record job builds it.'
+      pattern: '^[A-Za-z0-9_.-]{1,128}$'
+      example: debian12_amd64
+    RunStatus:
+      type: string
+      enum: [running, succeeded, failed, cancelled]
+    JobStatus:
+      type: string
+      enum: [pending, ready, leased, succeeded, failed, cancelled]
+    LogStream:
+      type: string
+      enum: [stdout, stderr]
+    ContextUpload:
+      type: object
+      required: [context_ref, sha256, size, created]
+      properties:
+        context_ref:
+          $ref: '#/components/schemas/ContextRef'
+        sha256:
+          $ref: '#/components/schemas/Sha256'
+        size:
+          type: integer
+          format: int64
+        created:
+          type: boolean
+          description: False when the same bytes were already stored.
+    JobInput:
+      type: object
+      additionalProperties: false
+      required: [job, path]
+      description: An upstream artifact fetched before the command runs.
+      properties:
+        job:
+          $ref: '#/components/schemas/JobName'
+        path:
+          $ref: '#/components/schemas/ArtifactPath'
+        as:
+          type: string
+          maxLength: 1024
+          description: Destination relative to the workdir root. Default `inputs/<job>/<path>`.
+    JobSpec:
+      type: object
+      additionalProperties: false
+      description: |
+        One job as submitted. `argv` and `env` values may contain
+        `${outputs.<job>.<key>}` placeholders, substituted when the job
+        becomes `ready`.
+      required: [name, argv]
+      properties:
+        name:
+          $ref: '#/components/schemas/JobName'
+        tags:
+          $ref: '#/components/schemas/Tags'
+        image:
+          type: string
+          maxLength: 512
+          description: Container image; empty runs the job as a process. Only assigned to workers with capability `docker`.
+        argv:
+          type: array
+          minItems: 1
+          maxItems: 1024
+          items:
+            type: string
+        workdir:
+          type: string
+          maxLength: 1024
+          description: Working directory relative to the unpacked context. Empty is the context root.
+        env:
+          type: object
+          maxProperties: 256
+          additionalProperties:
+            type: string
+          description: Extra environment variables (names match `EnvName`; `HOURCH_*` is reserved).
+        secrets:
+          type: array
+          maxItems: 64
+          description: Names of run secrets exposed to this job as environment variables.
+          items:
+            $ref: '#/components/schemas/SecretName'
+        inputs:
+          type: array
+          maxItems: 64
+          items:
+            $ref: '#/components/schemas/JobInput'
+        artifacts:
+          type: array
+          maxItems: 64
+          description: Paths to upload after success; a trailing `/` uploads every file under it.
+          items:
+            $ref: '#/components/schemas/ArtifactPath'
+        depends_on:
+          type: array
+          maxItems: 200
+          description: Explicit dependencies by job name (ordering with no data dependency).
+          items:
+            $ref: '#/components/schemas/JobName'
+        concurrency_key:
+          type: string
+          maxLength: 128
+          description: At most one `leased` job per key across all runs. Empty means none.
+        max_attempts:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 1
+        timeout_seconds:
+          type: integer
+          minimum: 1
+          description: Omitted means `limits.default_timeout` (2h).
+    RunSubmission:
+      type: object
+      additionalProperties: false
+      required: [workflow, jobs]
+      properties:
+        workflow:
+          $ref: '#/components/schemas/WorkflowName'
+        params:
+          type: object
+          maxProperties: 64
+          additionalProperties:
+            type: string
+          description: Free-form run parameters, shown in the UI.
+        context_ref:
+          allOf:
+            - $ref: '#/components/schemas/ContextRef'
+          description: Omitted means jobs start in an empty workdir.
+        secrets:
+          type: object
+          writeOnly: true
+          maxProperties: 64
+          description: Secret name → value. Write-only; never returned. Keys match `SecretName`.
+          additionalProperties:
+            type: string
+        jobs:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/JobSpec'
+      example:
+        workflow: hello
+        params: {version: 0.2.0}
+        context_ref: sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+        secrets: {PUBLISH_TOKEN: '...'}
+        jobs:
+          - name: settings
+            tags: [tiny]
+            argv: [workflows/hello/hello, settings]
+            timeout_seconds: 120
+          - name: build
+            tags: [kernel]
+            workdir: apps/hello
+            argv: [just, package, --version, '${outputs.settings.version}']
+            artifacts: [output/, build_metadata.json]
+            timeout_seconds: 7200
+          - name: publish
+            tags: [tiny]
+            secrets: [PUBLISH_TOKEN]
+            argv: [workflows/hello/hello, publish, --dir, inputs/build/output]
+            inputs: [{job: build, path: output/}]
+            concurrency_key: publish
+    RetryRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        secrets:
+          type: object
+          writeOnly: true
+          maxProperties: 64
+          description: |
+            Secret name → value. Overrides the original run's stored values;
+            required for every secret a job needs once the stored secrets are
+            gone (after an hourchd restart). Never returned.
+          additionalProperties:
+            type: string
+    JobCounts:
+      type: object
+      description: Number of jobs in each status.
+      required: [pending, ready, leased, succeeded, failed, cancelled]
+      properties:
+        pending: {type: integer}
+        ready: {type: integer}
+        leased: {type: integer}
+        succeeded: {type: integer}
+        failed: {type: integer}
+        cancelled: {type: integer}
+    RunSummary:
+      type: object
+      required: [id, workflow, number, params, status, submitted_by, created_at, finished_at, job_counts]
+      properties:
+        id:
+          $ref: '#/components/schemas/Ulid'
+        workflow:
+          $ref: '#/components/schemas/WorkflowName'
+        number:
+          type: integer
+          format: int64
+          description: Sequential per workflow, from 1.
+        params:
+          type: object
+          additionalProperties:
+            type: string
+        status:
+          $ref: '#/components/schemas/RunStatus'
+        submitted_by:
+          type: string
+          description: Name of the submitter token.
+        created_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+        job_counts:
+          $ref: '#/components/schemas/JobCounts'
+    Run:
+      description: A run with its jobs. Never carries secret values.
+      allOf:
+        - $ref: '#/components/schemas/RunSummary'
+        - type: object
+          required: [context_ref, secret_names, jobs]
+          properties:
+            context_ref:
+              type: string
+              description: '`sha256:<hex>`, or empty when the run has no context.'
+            secret_names:
+              type: array
+              description: Names of the secrets submitted with the run (values are never returned).
+              items:
+                $ref: '#/components/schemas/SecretName'
+            jobs:
+              type: array
+              description: In submission order.
+              items:
+                $ref: '#/components/schemas/JobSummary'
+    JobSummary:
+      type: object
+      required: [id, run_id, name, status, tags, depends_on, attempt, max_attempts, worker, exit_code, error, created_at, ready_at, started_at, finished_at]
+      properties:
+        id:
+          $ref: '#/components/schemas/Ulid'
+        run_id:
+          $ref: '#/components/schemas/Ulid'
+        name:
+          $ref: '#/components/schemas/JobName'
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        tags:
+          $ref: '#/components/schemas/Tags'
+        depends_on:
+          type: array
+          description: Effective dependencies by job name (explicit, inputs and output references).
+          items:
+            $ref: '#/components/schemas/JobName'
+        attempt:
+          type: integer
+          description: Attempts started so far (0 before the first assignment).
+        max_attempts:
+          type: integer
+        worker:
+          type: string
+          description: Worker id holding or last holding the lease; empty if never assigned.
+        exit_code:
+          type: integer
+          nullable: true
+        error:
+          type: string
+          description: |
+            Empty on success. Server-set reasons: `timeout`, `lease_expired`,
+            `accept_timeout`, `missing_output`, `secret_unavailable`,
+            `dependency_failed`, `cancelled`, `exit_code`, `no_worker`; otherwise the
+            worker's `result.error` text. `secret_unavailable`: the run's
+            stored secrets could not be read when the job was due to start,
+            almost always because hourchd restarted (the key lives only in
+            its memory); hourchd fails such `pending`/`ready` jobs at startup.
+            Retry the run with the values, or re-run the workflow binary.
+            `no_worker`: the job stayed `ready` with no connected worker
+            (idle or busy) able to run it for `dispatch.unschedulable_timeout`
+            (30m); a busy fleet never trips it.
+        created_at:
+          type: string
+          format: date-time
+        ready_at:
+          type: string
+          format: date-time
+          nullable: true
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+    JobAttempt:
+      type: object
+      description: One attempt, reconstructed from the events table.
+      required: [attempt, worker, started_at, finished_at, exit_code, error]
+      properties:
+        attempt:
+          type: integer
+          minimum: 1
+        worker:
+          type: string
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+        exit_code:
+          type: integer
+          nullable: true
+        error:
+          type: string
+    JobDetail:
+      description: |
+        A job row with its outputs, attempts and uploaded artifacts. Never
+        carries secret values; `secrets` lists names only.
+      allOf:
+        - $ref: '#/components/schemas/JobSummary'
+        - type: object
+          required: [image, argv, workdir, env, secrets, inputs, artifacts, concurrency_key, timeout_seconds, lease_until, outputs, attempts, uploaded_artifacts]
+          properties:
+            image:
+              type: string
+            argv:
+              type: array
+              description: After placeholder substitution once the job is `ready`; as submitted before.
+              items:
+                type: string
+            workdir:
+              type: string
+            env:
+              type: object
+              additionalProperties:
+                type: string
+            secrets:
+              type: array
+              description: Secret names this job receives (values are never returned).
+              items:
+                $ref: '#/components/schemas/SecretName'
+            inputs:
+              type: array
+              items:
+                $ref: '#/components/schemas/JobInput'
+            artifacts:
+              type: array
+              description: Declared artifact paths.
+              items:
+                $ref: '#/components/schemas/ArtifactPath'
+            concurrency_key:
+              type: string
+            timeout_seconds:
+              type: integer
+            lease_until:
+              type: string
+              format: date-time
+              nullable: true
+            outputs:
+              type: object
+              description: Key → value from `$HOURCH_OUTPUTS`.
+              additionalProperties:
+                type: string
+            attempts:
+              type: array
+              items:
+                $ref: '#/components/schemas/JobAttempt'
+            uploaded_artifacts:
+              type: array
+              items:
+                $ref: '#/components/schemas/Artifact'
+    Artifact:
+      type: object
+      required: [path, size, sha256]
+      properties:
+        path:
+          $ref: '#/components/schemas/ArtifactPath'
+        size:
+          type: integer
+          format: int64
+        sha256:
+          $ref: '#/components/schemas/Sha256'
+    Worker:
+      type: object
+      required: [id, hostname, tags, capabilities, connected, current_job, last_seen]
+      properties:
+        id:
+          type: string
+          pattern: '^[A-Za-z0-9_.-]{1,128}$'
+          example: node01
+        hostname:
+          type: string
+          description: Equals powermaster's hostname for the host.
+        tags:
+          $ref: '#/components/schemas/Tags'
+        capabilities:
+          type: array
+          items:
+            type: string
+            enum: [docker]
+        connected:
+          type: boolean
+        current_job:
+          allOf:
+            - $ref: '#/components/schemas/Ulid'
+          nullable: true
+        last_seen:
+          type: string
+          format: date-time
+    Counter:
+      type: object
+      required: [name, value]
+      properties:
+        name:
+          $ref: '#/components/schemas/CounterName'
+        value:
+          type: integer
+          format: int64
+          minimum: 1
+    BuildBody:
+      type: object
+      description: 'Your build metadata (any JSON object); stored verbatim (at most 1 MiB).'
+      additionalProperties: true
+    Build:
+      type: object
+      required: [build_type, flavour, build_num, run_id, job_id, created_at, body]
+      properties:
+        build_type:
+          $ref: '#/components/schemas/BuildType'
+        flavour:
+          $ref: '#/components/schemas/Flavour'
+        build_num:
+          type: integer
+          format: int64
+        run_id:
+          $ref: '#/components/schemas/Ulid'
+        job_id:
+          $ref: '#/components/schemas/Ulid'
+        created_at:
+          type: string
+          format: date-time
+        body:
+          $ref: '#/components/schemas/BuildBody'
+    LogChunkEvent:
+      type: object
+      required: [offset, stream, data]
+      properties:
+        offset:
+          type: integer
+          format: int64
+          description: Byte offset in the attempt's log after this chunk; also the SSE `id`.
+        stream:
+          $ref: '#/components/schemas/LogStream'
+        data:
+          type: string
+          description: UTF-8 text, secrets redacted.
+    LogEndEvent:
+      type: object
+      required: [offset, status, exit_code]
+      properties:
+        offset:
+          type: integer
+          format: int64
+          description: Final byte length of the attempt's log.
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        exit_code:
+          type: integer
+          nullable: true
+    LogStreamEvent:
+      description: One `data` payload on `GET /v1/jobs/{id}/log/stream`; the SSE `event` name (`log` or `end`) says which.
+      oneOf:
+        - $ref: '#/components/schemas/LogChunkEvent'
+        - $ref: '#/components/schemas/LogEndEvent'
+    RunEvent:
+      type: object
+      required: [seq, type, run]
+      properties:
+        seq:
+          type: integer
+          format: int64
+        type:
+          type: string
+          enum: [run]
+        run:
+          $ref: '#/components/schemas/RunSummary'
+    JobEvent:
+      type: object
+      required: [seq, type, job]
+      properties:
+        seq:
+          type: integer
+          format: int64
+        type:
+          type: string
+          enum: [job]
+        job:
+          $ref: '#/components/schemas/JobSummary'
+    WorkerEvent:
+      type: object
+      required: [seq, type, worker]
+      properties:
+        seq:
+          type: integer
+          format: int64
+        type:
+          type: string
+          enum: [worker]
+        worker:
+          $ref: '#/components/schemas/Worker'
+    ResyncEvent:
+      type: object
+      description: The requested `Last-Event-ID` is no longer in the ring; re-read the list routes.
+      required: [seq, type]
+      properties:
+        seq:
+          type: integer
+          format: int64
+        type:
+          type: string
+          enum: [resync]
+    Event:
+      description: One `data` payload on `GET /v1/events`, discriminated by `type` (equal to the SSE `event` name).
+      oneOf:
+        - $ref: '#/components/schemas/RunEvent'
+        - $ref: '#/components/schemas/JobEvent'
+        - $ref: '#/components/schemas/WorkerEvent'
+        - $ref: '#/components/schemas/ResyncEvent'
+      discriminator:
+        propertyName: type
+        mapping:
+          run: '#/components/schemas/RunEvent'
+          job: '#/components/schemas/JobEvent'
+          worker: '#/components/schemas/WorkerEvent'
+          resync: '#/components/schemas/ResyncEvent'
+    Healthz:
+      type: object
+      description: No job data.
+      required: [status, minio, powerwarden]
+      properties:
+        runs_holding_secrets:
+          type: integer
+          description: |
+            Runs whose stored secrets exist now; an hourchd restart loses them
+            (their pending jobs fail `secret_unavailable`). Omitted when
+            SQLite is not open.
+        status:
+          type: string
+          enum: [ok, unavailable]
+        minio:
+          type: string
+          enum: [connected, unreachable]
+        powerwarden:
+          type: string
+          enum: [connected, unreachable, disabled]
+    LatencyMs:
+      type: object
+      required: [p50, p99]
+      properties:
+        p50:
+          type: number
+        p99:
+          type: number
+    Stats:
+      type: object
+      required: [runs_running, runs_holding_secrets, jobs_ready, jobs_leased, unschedulable_ready, oldest_ready_age_seconds, workers_connected, workers_connected_by_tag, dispatch_latency_ms, powerwarden]
+      properties:
+        runs_running:
+          type: integer
+        runs_holding_secrets:
+          type: integer
+          description: |
+            Runs whose stored secrets exist now (any status: a failed or
+            cancelled run keeps them for a retry). An hourchd restart loses
+            them; check this before restarting.
+        jobs_ready:
+          type: integer
+        jobs_leased:
+          type: integer
+        unschedulable_ready:
+          type: integer
+          description: |
+            `ready` jobs that no connected worker (idle or busy) can run now.
+            Such a job fails `no_worker` once this has lasted
+            `dispatch.unschedulable_timeout`.
+        oldest_ready_age_seconds:
+          type: integer
+          nullable: true
+          description: Age of the oldest `ready` job; null when none.
+        workers_connected:
+          type: integer
+        workers_connected_by_tag:
+          type: object
+          additionalProperties:
+            type: integer
+        dispatch_latency_ms:
+          allOf:
+            - $ref: '#/components/schemas/LatencyMs'
+          nullable: true
+          description: '`ready` → `assign` latency over the last hour; null with no assignments.'
+        powerwarden:
+          type: string
+          enum: [connected, unreachable, disabled]

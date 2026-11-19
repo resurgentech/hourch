@@ -1,0 +1,4 @@
+{
+  "project": "hourch",
+  "gate": "set -e; for m in api daemon flow protocol worker; do just --justfile $m/justfile -d $m test; done; for m in daemon flow protocol worker; do just --justfile $m/justfile -d $m vet; done; just --justfile api/justfile -d api drift"
+}

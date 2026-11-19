@@ -1,0 +1,33 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hourchd · {{.Page}}</title>
+<link rel="stylesheet" href="/ui/static/app.css">
+<script src="/ui/static/app.js" defer></script>
+</head>
+<body>
+<nav>
+  <strong>hourchd</strong>
+  <a href="/ui/runs" {{if eq .Page "runs"}}class="on"{{end}}>Runs</a>
+  <a href="/ui/workers" {{if eq .Page "workers"}}class="on"{{end}}>Workers</a>
+  <span id="stream" class="muted">live: connecting</span>
+</nav>
+{{if .Flash}}<p class="flash">{{.Flash}}</p>{{end}}
+{{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+<div id="live">{{template "live" .}}</div>
+{{block "after" .}}{{end}}
+</body>
+</html>{{end}}
+
+{{define "live"}}
+<header>
+  <span>ready <b>{{.Ready}}</b>{{if .OldestReady}} · oldest <b class="{{if .Ready}}warn{{end}}">{{.OldestReady}}</b>{{end}}</span>
+  <span>leased <b>{{.Leased}}</b></span>
+  <span>workers connected <b>{{.Workers}}</b></span>
+  <span title="Runs whose stored secrets exist. Restarting hourchd loses them: their pending secret-using jobs fail secret_unavailable and they cannot be retried without the values.">holding secrets <b class="{{if .HoldSecrets}}warn{{end}}">{{.HoldSecrets}}</b></span>
+  <span title="{{.PWError}}">powerwarden <b class="{{if eq .Powerwarden "connected"}}ok{{else if eq .Powerwarden "unreachable"}}bad{{else}}muted{{end}}">{{.Powerwarden}}</b></span>
+</header>
+<main id="content">{{template "content" .}}</main>
+{{end}}

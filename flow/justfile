@@ -1,0 +1,13 @@
+# hourchflow leaf. Graph builder, Submit, Wait and job-side helpers for hourchd. Native justfile.
+
+# List available recipes
+default:
+  @just --list
+
+# Run tests (race detector on)
+test *args:
+  go test -race {{args}} ./...
+
+# Vet the module
+vet:
+  go vet ./...

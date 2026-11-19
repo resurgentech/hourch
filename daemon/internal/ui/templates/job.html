@@ -1,0 +1,85 @@
+{{define "content"}}
+{{with .Job}}
+<h1>{{.Name}} <span class="st st-{{.Status}}">{{.Status}}</span></h1>
+<p><a href="/ui/runs/{{pe .RunId}}">{{$.Run.Workflow}} #{{$.Run.Number}}</a> <span class="muted mono">{{.Id}}</span></p>
+{{if not $.Terminal}}
+<div class="actions"><form method="post" action="/ui/jobs/{{pe .Id}}/cancel"><button type="submit" class="danger">Cancel job</button></form></div>
+{{end}}
+<table class="kv">
+<tr><th>Worker</th><td>{{.Worker}}</td></tr>
+<tr><th>Attempt</th><td>{{.Attempt}} of {{.MaxAttempts}}</td></tr>
+<tr><th>Exit code</th><td>{{exit .ExitCode}}</td></tr>
+<tr><th>Error</th><td class="bad">{{.Error}}</td></tr>
+<tr><th>Tags</th><td>{{join .Tags ", "}}</td></tr>
+{{if .Image}}<tr><th>Image</th><td class="mono">{{.Image}}</td></tr>{{end}}
+<tr><th>Command</th><td class="mono">{{join .Argv " "}}</td></tr>
+<tr><th>Workdir</th><td class="mono">{{.Workdir}}</td></tr>
+<tr><th>Depends on</th><td>{{join .DependsOn ", "}}</td></tr>
+<tr><th>Secrets (names)</th><td>{{join .Secrets ", "}}</td></tr>
+{{if .ConcurrencyKey}}<tr><th>Concurrency key</th><td>{{.ConcurrencyKey}}</td></tr>{{end}}
+<tr><th>Timeout</th><td>{{.TimeoutSeconds}}s</td></tr>
+<tr><th>Created</th><td>{{ts .CreatedAt}}</td></tr>
+<tr><th>Ready</th><td>{{tsp .ReadyAt}}</td></tr>
+<tr><th>Started</th><td>{{tsp .StartedAt}}</td></tr>
+<tr><th>Finished</th><td>{{tsp .FinishedAt}}</td></tr>
+{{if .LeaseUntil}}<tr><th>Lease until</th><td>{{tsp .LeaseUntil}}</td></tr>{{end}}
+</table>
+
+{{if $.Env}}
+<h2>Environment</h2>
+<table class="kv">{{range $.Env}}<tr><th>{{.K}}</th><td class="mono">{{.V}}</td></tr>{{end}}</table>
+{{end}}
+
+{{if .Inputs}}
+<h2>Inputs</h2>
+<table>
+<thead><tr><th>From job</th><th>Path</th><th>As</th></tr></thead>
+<tbody>{{range .Inputs}}<tr><td>{{.Job}}</td><td class="mono">{{.Path}}</td><td class="mono">{{with .As}}{{.}}{{end}}</td></tr>{{end}}</tbody>
+</table>
+{{end}}
+
+<h2>Attempts</h2>
+<table>
+<thead><tr><th>Attempt</th><th>Worker</th><th>Started</th><th>Finished</th><th>Duration</th><th>Exit</th><th>Error</th><th>Log</th></tr></thead>
+<tbody>
+{{range .Attempts}}
+<tr>
+  <td>{{.Attempt}}</td>
+  <td>{{.Worker}}</td>
+  <td>{{ts .StartedAt}}</td>
+  <td>{{tsp .FinishedAt}}</td>
+  <td>{{adur (ptr .StartedAt) .FinishedAt}}</td>
+  <td>{{exit .ExitCode}}</td>
+  <td class="bad">{{.Error}}</td>
+  <td><a href="/ui/jobs/{{pe $.Job.Id}}?attempt={{.Attempt}}">view</a> · <a href="/ui/jobs/{{pe $.Job.Id}}/log?attempt={{.Attempt}}">raw</a></td>
+</tr>
+{{else}}
+<tr><td colspan="8" class="muted">Not started.</td></tr>
+{{end}}
+</tbody>
+</table>
+
+<h2>Outputs</h2>
+<table class="kv">{{range $.Outputs}}<tr><th>{{.K}}</th><td class="mono">{{.V}}</td></tr>{{else}}<tr><td class="muted">None.</td></tr>{{end}}</table>
+
+<h2>Artifacts</h2>
+<table>
+<thead><tr><th>Path</th><th>Size</th></tr></thead>
+<tbody>
+{{range $.Links}}<tr><td><a href="/ui/jobs/{{pe $.Job.Id}}/artifacts/{{artpath .Path}}">{{.Path}}</a></td><td>{{.Size}}</td></tr>
+{{else}}<tr><td colspan="2" class="muted">{{if .Artifacts}}Declared: {{join .Artifacts ", "}} (not uploaded){{else}}None declared.{{end}}</td></tr>
+{{end}}
+</tbody>
+</table>
+{{end}}
+{{end}}
+
+{{define "after"}}
+{{if .Job.Attempt}}
+<section class="log">
+  <h2>Log <span class="muted">attempt {{.Attempt}}</span></h2>
+  <p class="logbar"><label class="inline"><input type="checkbox" id="follow" checked> follow</label> <span id="logstate" class="muted">connecting</span></p>
+  <pre id="log" data-src="{{.LogSrc}}"></pre>
+</section>
+{{end}}
+{{end}}
