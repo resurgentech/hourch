@@ -45,7 +45,7 @@ image tag="latest":
   cd "{{root}}"
   docker build --build-arg VERSION={{version}} -f worker/cmd/{{exename}}/Dockerfile -t {{image_name}}:{{tag}} .
 
-# Smoke-test the built image: every tool the pacman-release jobs need, plus IMAGE_CA_CERT when set
+# Smoke-test the built image: every tool Arch package-release jobs need, plus IMAGE_CA_CERT when set
 image-smoke tag="latest":
   #!/usr/bin/env bash
   set -euo pipefail
