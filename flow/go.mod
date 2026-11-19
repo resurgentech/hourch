@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/klauspost/compress v1.18.0
-	github.com/resurgentech/hourch/api v0.1.0
+	github.com/resurgentech/hourch/api v0.2.0
 )
 
 require (

@@ -39,6 +39,9 @@ type Options struct {
 	// Powerwarden reports the publisher state: "connected", "unreachable"
 	// or "disabled" (nil means disabled).
 	Powerwarden func() string
+	// KeyRequestURL (personal_keys.request_url) is advertised at
+	// GET /v1/key-request; "" answers 404.
+	KeyRequestURL string
 }
 
 // Server serves the API.
@@ -146,6 +149,7 @@ func (s *Server) routes() []route {
 		{"PUT", "/v1/builds/{type}/{flavour}/{num}", jobOnly, s.putBuild},
 		{"GET", "/v1/events", sub, s.streamEvents},
 		{"GET", "/v1/healthz", nil, s.healthz},
+		{"GET", "/v1/key-request", nil, s.keyRequest},
 		{"GET", "/v1/stats", sub, s.stats},
 		{"GET", "/v1/worker/connect", wrk, s.connectWorker},
 		{"GET", "/v1/worker/jobs/{id}/context", wrk, s.workerContext},

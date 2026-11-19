@@ -90,6 +90,12 @@ proxy that keeps the prefix in the path (`/p` serves `/p/ui/...`; it must start
 with `/`, not end with `/`, not contain `..`, and each segment may hold only
 `A-Z a-z 0-9 . _ ~ -`). The `/v1` API is not prefixed.
 
+`personal_keys.request_url` (default `""`) is optional: the absolute `http(s)`
+URL of an external key provider where a tool without a token files a key
+request. hourchd advertises it, without authentication, at
+`GET /v1/key-request` as `{"request_url": "..."}`; unset, that route answers
+404 and nothing else changes. See the DESIGN doc, "Key-request discovery".
+
 ## Web UI
 
 `https://hourchd.example.com/` redirects to `/ui/runs` (or to

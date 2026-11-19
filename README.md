@@ -27,6 +27,7 @@ Design: [`docs/DESIGN-hourchd.md`](docs/DESIGN-hourchd.md).
 |---|---|---|
 | `specs/openapi/hourchd.yml` | | HTTP API contract (source of truth) |
 | `specs/hourchd/worker-protocol.schema.json` | | Worker websocket messages (JSON Schema) |
+| `specs/fixtures/` | | HTTP exchanges of the key-request discovery contract ([README](specs/fixtures/README.md)) |
 | `api` | `github.com/resurgentech/hourch/api` | Generated Go client and types (`package hourchdapi`) |
 | `protocol` | `github.com/resurgentech/hourch/protocol` | Go types for the worker messages, checked against the schema (`package hourchdprotocol`) |
 | `daemon` | `github.com/resurgentech/hourch/daemon` | hourchd: `cmd/hourchd` and its internal packages ([README](daemon/README.md)) |
@@ -82,7 +83,7 @@ How to configure and run hourchd and the workers: the package READMEs, `daemon/c
 - **Versions.** Each module is versioned on its own with a directory-prefixed tag, e.g. `flow/v0.1.0`. Stay on
   v0.x.
 - **Intra-repo requires and `go.work`.** `flow` requires `api`, `worker` requires `protocol`, and `daemon` requires
-  all four, each at a tag (`v0.1.0`), so `go install <module>@<tag>` and builds with `GOWORK=off` resolve real
+  all four, each at a tag (e.g. `v0.1.0`), so `go install <module>@<tag>` and builds with `GOWORK=off` resolve real
   versions. Go reads the `go.mod` of the required version even inside a workspace, so `go.work` also carries one
   *versioned* `replace` per intra-repo require, pointing that version at the local copy; in-repo work never needs a
   published tag. **When an intra-repo `require` moves to a new version, the matching `go.work` replace moves with

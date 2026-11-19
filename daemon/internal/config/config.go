@@ -172,6 +172,15 @@ type UI struct {
 	PathPrefix string `yaml:"path_prefix"`
 }
 
+// PersonalKeys configures personal keys issued by an external key provider.
+// It holds only the request URL for now.
+type PersonalKeys struct {
+	// RequestURL is advertised at GET /v1/key-request: the absolute http(s)
+	// URL where a tool without a key files a key request. "" (default): the
+	// route answers 404.
+	RequestURL string `yaml:"request_url"`
+}
+
 // Config is config.yaml.
 type Config struct {
 	Listen      string      `yaml:"listen"`
@@ -187,6 +196,8 @@ type Config struct {
 	Powerwarden Powerwarden `yaml:"powerwarden"`
 	Events      Events      `yaml:"events"`
 	UI          UI          `yaml:"ui"`
+
+	PersonalKeys PersonalKeys `yaml:"personal_keys"`
 }
 
 func sec(n int) Duration { return Duration(time.Duration(n) * time.Second) }
@@ -344,6 +355,12 @@ func (c Config) Validate() error {
 		}
 		if c.Powerwarden.TokenFile == "" {
 			return fmt.Errorf("powerwarden.token_file is required when powerwarden.url is set")
+		}
+	}
+	if u := c.PersonalKeys.RequestURL; u != "" {
+		p, err := url.Parse(u)
+		if err != nil || !p.IsAbs() || (p.Scheme != "http" && p.Scheme != "https") || p.Host == "" {
+			return fmt.Errorf("personal_keys.request_url %q: want an absolute http(s)://host/... URL (or \"\" to answer 404)", u)
 		}
 	}
 	if err := c.UI.validate(); err != nil {

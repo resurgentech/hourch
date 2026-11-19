@@ -8,10 +8,11 @@ use (
 	./worker
 )
 
-// Intra-repo requires name a tag (v0.1.0). These versioned replaces point that
-// exact version at the workspace copy, so in-repo work needs no published tag.
-// When an intra-repo require moves to a new version, move its replace with it.
-replace github.com/resurgentech/hourch/api v0.1.0 => ./api
+// Intra-repo requires name a tag (api v0.2.0, the others v0.1.0). These
+// versioned replaces point that exact version at the workspace copy, so
+// in-repo work needs no published tag. When an intra-repo require moves to a
+// new version, move its replace with it.
+replace github.com/resurgentech/hourch/api v0.2.0 => ./api
 
 replace github.com/resurgentech/hourch/flow v0.1.0 => ./flow
 

@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/coder/websocket v1.8.15
 	github.com/minio/minio-go/v7 v7.0.95
-	github.com/resurgentech/hourch/api v0.1.0
+	github.com/resurgentech/hourch/api v0.2.0
 	github.com/resurgentech/hourch/flow v0.1.0
 	github.com/resurgentech/hourch/protocol v0.1.0
 	github.com/resurgentech/hourch/worker v0.1.0

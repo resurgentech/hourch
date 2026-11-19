@@ -69,3 +69,9 @@ ui:                                          # web UI at /ui; / redirects to /ui
                                              # (several allow rotation; blank and # lines skipped); e.g. /etc/hourchd/proxy.secret
     secret_header: ""                        # header carrying the shared secret; e.g. X-Auth-Proxy-Secret
     user_header: ""                          # header carrying the username; e.g. Remote-User
+
+personal_keys:                               # optional: keys issued by an external key provider
+  request_url: ""                            # advertised, unauthenticated, at GET /v1/key-request as {"request_url": ...}:
+                                             # where a tool without a token files a key request. "" (default): that route
+                                             # answers 404 and nothing else changes. Absolute http(s) URL, e.g.
+                                             # https://keys.example/v1/services/hourchd/requests

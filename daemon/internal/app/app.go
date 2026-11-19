@@ -176,6 +176,7 @@ func Build(cfg config.Config, d Deps) (*App, error) {
 		ContextMaxBytes: int64(cfg.Limits.ContextMaxBytes), ArtifactMaxBytes: int64(cfg.Limits.ArtifactMaxBytes),
 		WorkerRetention: cfg.Retention.Rows.D(),
 		Powerwarden:     func() string { s, _ := pwState(); return s },
+		KeyRequestURL:   cfg.PersonalKeys.RequestURL,
 	})
 	if err != nil {
 		return fail(err)

@@ -20,8 +20,8 @@ info:
       sorted by id are in creation order.
     - Durations are integer seconds in fields named `*_seconds`.
     - Every 4xx and 5xx response with a body carries the `Error` body.
-    - Authentication: every `/v1` route except `GET /v1/healthz` requires
-      `Authorization: Bearer <token>`. Tokens are named in `tokens_file`.
+    - Authentication: every `/v1` route except `GET /v1/healthz` and
+      `GET /v1/key-request` requires `Authorization: Bearer <token>`. Tokens are named in `tokens_file`.
       There are three kinds:
         - **submitter/operator tokens** (`bearerAuth`): every route outside
           `/v1/worker/`, except `PUT /v1/builds/...`.
@@ -49,7 +49,7 @@ info:
       the server enforces its configured values.
 
     The web UI (`/ui`, HTML, basic auth) is not part of this spec.
-  version: 0.1.0
+  version: 0.2.0
 servers:
   - url: http://localhost:8093
     description: local default; use your deployment's URL
@@ -66,6 +66,8 @@ tags:
   - name: builds
   - name: events
   - name: meta
+  - name: key-request
+    description: Where a client asks for a key.
 paths:
   /v1/contexts:
     post:
@@ -733,6 +735,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Healthz'
+  /v1/key-request:
+    get:
+      tags: [key-request]
+      summary: Where to ask for a key
+      description: |
+        No authentication. Answers `200` with the absolute URL where key
+        requests are filed, or `404` when the service has none configured
+        (`personal_keys.request_url` in `config.yaml`, default unset).
+
+        A client that is given a request URL directly does not call this
+        endpoint. Discovery that fails any other way (a network error, a
+        status other than 200 and 404, a `request_url` that is not an
+        absolute `http` or `https` URL) is an error the client reports; it
+        files nothing. Exchanges: `specs/fixtures/keyrequest/discovery.json`
+        (the 200 example below) and `discovery-none.json` (the 404).
+      operationId: getKeyRequestDiscovery
+      security: []
+      responses:
+        '200':
+          description: The service is configured with a request URL.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyRequestDiscovery'
+              examples:
+                discovery:
+                  summary: 'Discovery: a request URL'
+                  value:
+                    request_url: https://provider.example/v1/services/example/requests
+        '404':
+          description: |
+            The service has no request URL. hourchd answers with its usual
+            `Error` body (`not_found`); a client must not rely on the body.
+            Fixture: `specs/fixtures/keyrequest/discovery-none.json` (no body).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /v1/stats:
     get:
       tags: [meta]
@@ -1690,6 +1730,17 @@ components:
         powerwarden:
           type: string
           enum: [connected, unreachable, disabled]
+    KeyRequestDiscovery:
+      type: object
+      required: [request_url]
+      properties:
+        request_url:
+          type: string
+          format: uri
+          description: |
+            Absolute `http` or `https` URL where a key request is filed with
+            `POST`.
+          example: https://provider.example/v1/services/example/requests
     LatencyMs:
       type: object
       required: [p50, p99]

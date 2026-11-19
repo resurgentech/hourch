@@ -115,6 +115,7 @@ func TestDesignRoutesPresent(t *testing.T) {
 		"GET /v1/builds",
 		"GET /v1/events",
 		"GET /v1/healthz",
+		"GET /v1/key-request",
 		"GET /v1/stats",
 		"GET /v1/worker/connect",
 		"GET /v1/worker/jobs/{id}/context",
@@ -133,7 +134,7 @@ func TestDesignRoutesPresent(t *testing.T) {
 }
 
 // TestSecurity checks the global bearerAuth requirement, the empty override
-// on /v1/healthz, and that the job token is accepted only on the counter and
+// on /v1/healthz and /v1/key-request, and that the job token is accepted only on the counter and
 // build routes (counters also with bearerAuth; builds PUT only the job token).
 func TestSecurity(t *testing.T) {
 	file, _ := loadSpecs(t)
@@ -145,6 +146,7 @@ func TestSecurity(t *testing.T) {
 	}
 	want := map[string][]string{
 		"GET /v1/healthz":                       {},
+		"GET /v1/key-request":                   {},
 		"POST /v1/counters/{name}/next":         {"bearerAuth", "jobToken"},
 		"PUT /v1/builds/{type}/{flavour}/{num}": {"jobToken"},
 	}

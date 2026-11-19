@@ -404,8 +404,18 @@ A job sees: the context unpacked in `work_dir/<job_id>-<attempt>`, its inputs un
 | `PUT /v1/builds/{type}/{flavour}/{num}`, `GET /v1/builds?type=&flavour=` | Store and list build records. PUT needs the job token |
 | `GET /v1/events` | SSE for the UI and `Wait`: run, job, worker changes, with `Last-Event-ID` resume |
 | `GET /v1/healthz`, `GET /v1/stats` | Liveness (object store and powerwarden state); ready/leased counts, oldest ready age, dispatch latency p50/p99, `unschedulable_ready`, `runs_holding_secrets` (what a restart would lose) |
+| `GET /v1/key-request` | Key-request discovery (no authentication): `200 {"request_url": ...}` when `personal_keys.request_url` is set, else `404` |
 
-Every route outside `/v1/worker/` takes a submitter token (`Authorization: Bearer`), except the counter and build routes, which also take the job token.
+Every route outside `/v1/worker/` takes a submitter token (`Authorization: Bearer`), except the counter and build routes, which also take the job token, and `GET /v1/healthz` and `GET /v1/key-request`, which take none.
+
+### Key-request discovery
+
+hourchd can tell a tool that has no token where to ask for one. Keys are issued by a separate key provider, which takes a request from the tool, has a person approve it in a browser, and hands the tool its key once; hourchd only advertises the provider's address. The feature is optional and off by default.
+
+- **Setting.** `personal_keys.request_url`: the absolute `http` or `https` URL where a key request for this service is filed (with `POST`). Default `""`. Anything else (a relative URL, another scheme, no host) fails startup and `check-config`, naming the key.
+- **Route.** `GET /v1/key-request`, beside `GET /v1/healthz`, needs no authentication (a token, if sent, is ignored). With the setting it answers `200` with `{"request_url": "<the setting>"}`; without it, `404` with the usual `Error` body (`not_found`), which a client must not rely on. With the setting absent nothing else changes.
+- **Client side.** A tool that already has a token never asks. A tool may be given a request URL directly (a flag or an environment variable), which replaces discovery. Discovery that fails any other way (a network error, a status other than `200` and `404`, a `request_url` that is not an absolute `http` or `https` URL) is an error the tool reports; it files nothing. With no request URL from either source, a missing token is the same error as before.
+- **Contract.** The route and the `KeyRequestDiscovery` schema are in `specs/openapi/hourchd.yml`; the two exchanges are `specs/fixtures/keyrequest/discovery.json` and `discovery-none.json`. Filing, polling and approval are between the tool and the provider; hourchd takes no part in them.
 
 ### Secrets
 
@@ -465,7 +475,7 @@ powerwarden is a separate service that powers hosts on and off according to dema
 
 `/etc/hourchd/config.yaml` for the daemon and `/etc/hourch/worker.yaml` for workers, paths overridable with `--config`. `daemon/config.yaml.example` and `worker/worker.yaml.example` hold every key with its default (the per-host worker identity keys show illustrative values). Unknown keys are a startup error. `hourchd check-config --config FILE` validates the config, the tokens file, the powerwarden token (when enabled) and, when the UI is enabled, the htpasswd file (`ui.auth: htpasswd`) or the proxy secret file and its permissions (`ui.auth: proxy`).
 
-Required, with no default: `minio.endpoint` (daemon); `hourchd_url` and `worker_id` (worker). `powerwarden.url` defaults to `""`, which disables the publisher.
+Required, with no default: `minio.endpoint` (daemon); `hourchd_url` and `worker_id` (worker). `powerwarden.url` defaults to `""`, which disables the publisher. `personal_keys.request_url` defaults to `""`, which makes `GET /v1/key-request` answer `404`.
 
 ```yaml
 # hourchd (abridged; see daemon/config.yaml.example)
@@ -502,6 +512,8 @@ events: {ring_size: 1000, heartbeat: 15s}
 ui:     {enabled: true, auth: htpasswd, htpasswd_file: /etc/hourchd/ui.htpasswd, path_prefix: ""}  # "/p" serves /p/ui/...
 # ui.proxy (auth: proxy only; all three required then, no defaults; an error under htpasswd):
 #   {secret_file: "", secret_header: "", user_header: ""}
+personal_keys:
+  request_url: ""                            # advertised at GET /v1/key-request; "" answers 404
 ```
 
 ```yaml

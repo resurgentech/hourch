@@ -228,3 +228,27 @@ func TestUIAuth(t *testing.T) {
 		t.Errorf("disabled UI: %v", err)
 	}
 }
+
+// personal_keys.request_url: unset by default (GET /v1/key-request is 404);
+// when set it must be an absolute http or https URL, as the key-request
+// contract requires of what discovery returns.
+func TestPersonalKeysRequestURL(t *testing.T) {
+	if got := Default().PersonalKeys; got != (PersonalKeys{}) {
+		t.Fatalf("default personal_keys = %+v", got)
+	}
+	for _, u := range []string{"", "https://provider.example/v1/services/example/requests", "http://10.0.0.1:8080/r"} {
+		c, err := parseReq("personal_keys:\n  request_url: \"" + u + "\"\n")
+		if err != nil || c.PersonalKeys.RequestURL != u {
+			t.Errorf("request_url %q: %v, %q", u, err, c.PersonalKeys.RequestURL)
+		}
+	}
+	for _, u := range []string{"provider.example/r", "/v1/r", "ftp://provider.example/r", "https://", "https:///r", "http//x", " https://provider.example/r"} {
+		_, err := parseReq("personal_keys:\n  request_url: \"" + u + "\"\n")
+		if err == nil || !strings.Contains(err.Error(), "personal_keys.request_url") {
+			t.Errorf("request_url %q: want personal_keys.request_url error, got %v", u, err)
+		}
+	}
+	if _, err := parseReq("personal_keys:\n  url: https://provider.example/list\n"); err == nil {
+		t.Error("personal_keys.url is not a key yet: want an unknown-key error")
+	}
+}
