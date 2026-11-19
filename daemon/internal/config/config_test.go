@@ -236,16 +236,23 @@ func TestPersonalKeysRequestURL(t *testing.T) {
 	if got := Default().PersonalKeys; got != (PersonalKeys{}) {
 		t.Fatalf("default personal_keys = %+v", got)
 	}
-	for _, u := range []string{"", "https://provider.example/v1/services/example/requests", "http://10.0.0.1:8080/r"} {
+	for _, u := range []string{"", "https://provider.example/v1/services/example/requests", "http://10.0.0.1:8080/r", "HTTPS://provider.example/r", "Http://provider.example/r?x=1"} {
 		c, err := parseReq("personal_keys:\n  request_url: \"" + u + "\"\n")
 		if err != nil || c.PersonalKeys.RequestURL != u {
 			t.Errorf("request_url %q: %v, %q", u, err, c.PersonalKeys.RequestURL)
 		}
 	}
-	for _, u := range []string{"provider.example/r", "/v1/r", "ftp://provider.example/r", "https://", "https:///r", "http//x", " https://provider.example/r"} {
+	for _, u := range []string{"provider.example/r", "/v1/r", "ftp://provider.example/r", "https://", "https:///r", "http//x", " https://provider.example/r",
+		"https://user:pass@provider.example/r", "https://user@provider.example/r", "https://provider.example/r#frag", "https://provider.example/r#"} {
 		_, err := parseReq("personal_keys:\n  request_url: \"" + u + "\"\n")
 		if err == nil || !strings.Contains(err.Error(), "personal_keys.request_url") {
 			t.Errorf("request_url %q: want personal_keys.request_url error, got %v", u, err)
+		}
+	}
+	// A refused URL with user info is not echoed (it may hold a password).
+	for _, u := range []string{"https://user:s3cretpw@provider.example/r", "ftp://user:s3cretpw@provider.example/r"} {
+		if _, err := parseReq("personal_keys:\n  request_url: \"" + u + "\"\n"); err == nil || strings.Contains(err.Error(), "s3cretpw") {
+			t.Errorf("request_url %q: error %v must exist and not contain the password", u, err)
 		}
 	}
 	if _, err := parseReq("personal_keys:\n  url: https://provider.example/list\n"); err == nil {

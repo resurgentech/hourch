@@ -90,12 +90,17 @@ func checkConfig(args []string) error {
 }
 
 // checkSummary is check-config's success line: "config ok", plus " ui=proxy"
-// when the UI trusts a reverse proxy for identity.
+// when the UI trusts a reverse proxy for identity, plus " key_request=on"
+// when personal_keys.request_url is set.
 func checkSummary(cfg config.Config) string {
+	s := "config ok"
 	if cfg.UI.Enabled && cfg.UI.Auth == "proxy" {
-		return "config ok ui=proxy"
+		s += " ui=proxy"
 	}
-	return "config ok"
+	if cfg.PersonalKeys.RequestURL != "" {
+		s += " key_request=on"
+	}
+	return s
 }
 
 func serve(ctx context.Context, args []string) error {

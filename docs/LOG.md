@@ -64,3 +64,15 @@ are appended, never edited in; a hook refuses rewrites.
 - Release (after review): `api/v0.2.0`, then `daemon/v0.3.0`, both on the second commit below; no follow-up commit.
 - Commits: "B6: hourchd key-request discovery (GET /v1/key-request)" and "B6: go.sum for api v0.2.0; log".
 - Commits: the commit "A7: align UI prefix and proxy settings with the shared contract".
+
+## 2026-11-19 — B6 alignment: request URL rule and check-config line match the shared contract
+
+- `personal_keys.request_url` must also have no user info and no fragment (scheme still case-insensitive, value
+  still served exactly as written); a refused value with user info is not echoed in the error. When the setting is
+  set, `check-config` appends ` key_request=on` (after ` ui=proxy`); unset, its output is unchanged. Example config,
+  DESIGN doc and daemon README updated. `api` unchanged. Release unchanged: `api/v0.2.0`, then `daemon/v0.3.0`, now
+  both on this commit.
+- Correction to the log: the B6 entry above was inserted inside the "A7 alignment" entry, so the last line above it
+  ("Commits: the commit \"A7: align UI prefix and proxy settings with the shared contract\"") belongs to that A7
+  alignment entry, not to B6.
+- Commits: the commit "B6: align request_url rule and check-config line with the shared contract".

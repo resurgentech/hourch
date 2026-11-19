@@ -73,5 +73,6 @@ ui:                                          # web UI at /ui; / redirects to /ui
 personal_keys:                               # optional: keys issued by an external key provider
   request_url: ""                            # advertised, unauthenticated, at GET /v1/key-request as {"request_url": ...}:
                                              # where a tool without a token files a key request. "" (default): that route
-                                             # answers 404 and nothing else changes. Absolute http(s) URL, e.g.
-                                             # https://keys.example/v1/services/hourchd/requests
+                                             # answers 404 and nothing else changes. Absolute http(s) URL with a host,
+                                             # no user info, no fragment; served exactly as written; check-config then
+                                             # prints "key_request=on". e.g. https://keys.example/v1/services/hourchd/requests

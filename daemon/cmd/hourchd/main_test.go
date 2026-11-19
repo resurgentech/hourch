@@ -22,4 +22,13 @@ func TestCheckSummary(t *testing.T) {
 	if got := checkSummary(cfg); got != "config ok ui=proxy" {
 		t.Errorf("proxy: %q", got)
 	}
+	// personal_keys.request_url set: " key_request=on", after ui=proxy.
+	cfg.PersonalKeys.RequestURL = "https://provider.example/v1/services/example/requests"
+	if got := checkSummary(cfg); got != "config ok ui=proxy key_request=on" {
+		t.Errorf("proxy and key request: %q", got)
+	}
+	cfg.UI.Auth = "htpasswd"
+	if got := checkSummary(cfg); got != "config ok key_request=on" {
+		t.Errorf("key request: %q", got)
+	}
 }

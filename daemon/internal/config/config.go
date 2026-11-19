@@ -358,9 +358,21 @@ func (c Config) Validate() error {
 		}
 	}
 	if u := c.PersonalKeys.RequestURL; u != "" {
+		// url.Parse lower-cases the scheme, so HTTPS:// is accepted; the
+		// value itself is served exactly as written.
 		p, err := url.Parse(u)
-		if err != nil || !p.IsAbs() || (p.Scheme != "http" && p.Scheme != "https") || p.Host == "" {
-			return fmt.Errorf("personal_keys.request_url %q: want an absolute http(s)://host/... URL (or \"\" to answer 404)", u)
+		if err != nil {
+			return fmt.Errorf("personal_keys.request_url: not a URL (or \"\" to answer 404): %v", err)
+		}
+		if !p.IsAbs() || (p.Scheme != "http" && p.Scheme != "https") || p.Host == "" {
+			return fmt.Errorf("personal_keys.request_url %q: want an absolute http(s)://host/... URL (or \"\" to answer 404)", p.Redacted())
+		}
+		if p.User != nil {
+			// The value is not echoed: it may hold a password.
+			return fmt.Errorf("personal_keys.request_url: must not carry user info (it is served without authentication)")
+		}
+		if strings.Contains(u, "#") {
+			return fmt.Errorf("personal_keys.request_url %q: must not have a fragment", u)
 		}
 	}
 	if err := c.UI.validate(); err != nil {
