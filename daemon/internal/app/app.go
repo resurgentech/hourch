@@ -168,7 +168,7 @@ func Build(cfg config.Config, d Deps) (*App, error) {
 	}
 	mux := http.NewServeMux()
 	if users != nil {
-		u, err := ui.New(ui.Options{Engine: eng, API: srv, Users: users, Powerwarden: pwState,
+		u, err := ui.New(ui.Options{Engine: eng, API: srv, Users: users, PathPrefix: cfg.UI.PathPrefix, Powerwarden: pwState,
 			WorkerRetention: cfg.Retention.Rows.D(), Log: d.Log.With("component", "ui")})
 		if err != nil {
 			return fail(err)

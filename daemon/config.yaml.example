@@ -59,3 +59,5 @@ events:
 ui:                                          # web UI at /ui; / redirects to /ui/runs
   enabled: true
   htpasswd_file: /etc/hourchd/ui.htpasswd    # htpasswd -B (bcrypt only)
+  path_prefix: ""                            # "" (default) serves /ui; "/p" serves /p/ui/... and / redirects to /p/ui/runs
+                                             # (starts with /, no trailing /, no ..; the /v1 API is never prefixed)

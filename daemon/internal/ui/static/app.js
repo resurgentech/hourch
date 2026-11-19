@@ -1,7 +1,9 @@
-// hourchd UI: re-render the live region when /ui/events reports a change,
-// and stream a job's log from /ui/jobs/{id}/log/stream.
+// hourchd UI: re-render the live region when {base}/events reports a change,
+// and stream a job's log from the server-built data-src of #log.
+// base is the UI root (the path prefix followed by /ui), from the body data-base.
 (function () {
   "use strict";
+  var base = document.body.getAttribute("data-base") || "";
   var status = document.getElementById("stream");
   var live = document.getElementById("live");
 
@@ -23,7 +25,7 @@
     var schedule = function () {
       if (!timer) timer = setTimeout(refresh, 300);
     };
-    var es = new EventSource("/ui/events");
+    var es = new EventSource(base + "/events");
     ["run", "job", "worker", "resync"].forEach(function (name) {
       es.addEventListener(name, schedule);
     });

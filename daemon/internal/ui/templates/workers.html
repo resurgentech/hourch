@@ -10,7 +10,7 @@
   <td>{{join .Tags ", "}}</td>
   <td>{{range .Capabilities}}{{.}} {{end}}</td>
   <td>{{if .Connected}}<span class="ok">connected</span>{{else}}disconnected{{end}}</td>
-  <td>{{with .CurrentJob}}<a href="/ui/jobs/{{pe .}}">{{.}}</a>{{end}}</td>
+  <td>{{with .CurrentJob}}<a href="{{base}}/jobs/{{pe .}}">{{.}}</a>{{end}}</td>
   <td>{{ts .LastSeen}} ({{since .LastSeen}} ago)</td>
 </tr>
 {{else}}

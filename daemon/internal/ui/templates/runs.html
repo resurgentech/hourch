@@ -1,6 +1,6 @@
 {{define "content"}}
 <h1>Runs</h1>
-<form class="row" method="get" action="/ui/runs">
+<form class="row" method="get" action="{{base}}/runs">
   <label>Workflow <input name="workflow" value="{{.Workflow}}" placeholder="any"></label>
   <label>Status
     <select name="status">
@@ -15,7 +15,7 @@
 <tbody>
 {{range .Runs}}
 <tr>
-  <td><a href="/ui/runs/{{pe .Id}}">{{.Workflow}} #{{.Number}}</a></td>
+  <td><a href="{{base}}/runs/{{pe .Id}}">{{.Workflow}} #{{.Number}}</a></td>
   <td><span class="st st-{{.Status}}">{{.Status}}</span></td>
   <td class="counts">{{with .JobCounts}}{{if .Succeeded}}<span class="st-succeeded">{{.Succeeded}} ok</span> {{end}}{{if .Leased}}<span class="st-leased">{{.Leased}} running</span> {{end}}{{if .Ready}}<span class="st-ready">{{.Ready}} ready</span> {{end}}{{if .Pending}}<span class="st-pending">{{.Pending}} pending</span> {{end}}{{if .Failed}}<span class="st-failed">{{.Failed}} failed</span> {{end}}{{if .Cancelled}}<span class="st-cancelled">{{.Cancelled}} cancelled</span>{{end}}{{end}}</td>
   <td>{{.SubmittedBy}}</td>

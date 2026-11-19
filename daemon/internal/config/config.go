@@ -159,6 +159,10 @@ type Events struct {
 type UI struct {
 	Enabled      bool   `yaml:"enabled"`
 	HtpasswdFile string `yaml:"htpasswd_file"`
+	// PathPrefix moves the UI (and the site-root redirect) under a reverse
+	// proxy's path: "/p" serves /p/ui/.... "" serves /ui. The API is never
+	// prefixed.
+	PathPrefix string `yaml:"path_prefix"`
 }
 
 // Config is config.yaml.
@@ -337,6 +341,16 @@ func (c Config) Validate() error {
 	}
 	if c.UI.Enabled && c.UI.HtpasswdFile == "" {
 		return fmt.Errorf("ui.htpasswd_file is required when ui.enabled is true")
+	}
+	if p := c.UI.PathPrefix; p != "" {
+		switch {
+		case !strings.HasPrefix(p, "/"):
+			return fmt.Errorf("ui.path_prefix %q must start with /", p)
+		case strings.HasSuffix(p, "/"):
+			return fmt.Errorf("ui.path_prefix %q must not end with /", p)
+		case strings.Contains(p, ".."):
+			return fmt.Errorf("ui.path_prefix %q must not contain ..", p)
+		}
 	}
 	if c.Backup.MinioPrefix != "" && !strings.HasSuffix(c.Backup.MinioPrefix, "/") {
 		return fmt.Errorf("backup.minio_prefix must end with /")

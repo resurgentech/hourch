@@ -150,3 +150,21 @@ func TestUnschedulableTimeout(t *testing.T) {
 		t.Fatalf("negative: %v", err)
 	}
 }
+
+func TestUIPathPrefix(t *testing.T) {
+	if got := Default().UI.PathPrefix; got != "" {
+		t.Fatalf("default path_prefix = %q", got)
+	}
+	for _, p := range []string{"", "/p", "/a/b"} {
+		c, err := parseReq("ui:\n  path_prefix: \"" + p + "\"\n")
+		if err != nil || c.UI.PathPrefix != p {
+			t.Errorf("path_prefix %q: %v, %q", p, err, c.UI.PathPrefix)
+		}
+	}
+	for _, p := range []string{"p", "/p/", "/", "/a/../b", "/.."} {
+		_, err := parseReq("ui:\n  path_prefix: \"" + p + "\"\n")
+		if err == nil || !strings.Contains(err.Error(), "ui.path_prefix") {
+			t.Errorf("path_prefix %q: want ui.path_prefix error, got %v", p, err)
+		}
+	}
+}

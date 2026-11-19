@@ -76,10 +76,14 @@ tokens file names `hourchd`. `powerwarden.url: ""` disables the publisher.
 
 `ui.htpasswd_file`: `htpasswd -B -c ui.htpasswd alice` (bcrypt only; other
 hash types are a startup error). `ui.enabled: false` turns the UI off.
+`ui.path_prefix` (default `""`) moves the UI to `{prefix}/ui` for a reverse
+proxy that keeps the prefix in the path (`/p` serves `/p/ui/...`; it must start
+with `/`, not end with `/`, and not contain `..`). The `/v1` API is not prefixed.
 
 ## Web UI
 
-`https://hourchd.example.com/` redirects to `/ui/runs`. Every `/ui` route needs
+`https://hourchd.example.com/` redirects to `/ui/runs` (or to
+`{ui.path_prefix}/ui/runs`). Every `/ui` route needs
 basic auth from `ui.htpasswd_file`; the POST actions (cancel run, retry run,
 cancel job) also need a same-origin `Origin` or `Referer` (CSRF guard).
 

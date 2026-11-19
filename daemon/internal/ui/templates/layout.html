@@ -4,14 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>hourchd · {{.Page}}</title>
-<link rel="stylesheet" href="/ui/static/app.css">
-<script src="/ui/static/app.js" defer></script>
+<link rel="stylesheet" href="{{base}}/static/app.css">
+<script src="{{base}}/static/app.js" defer></script>
 </head>
-<body>
+<body data-base="{{base}}">
 <nav>
   <strong>hourchd</strong>
-  <a href="/ui/runs" {{if eq .Page "runs"}}class="on"{{end}}>Runs</a>
-  <a href="/ui/workers" {{if eq .Page "workers"}}class="on"{{end}}>Workers</a>
+  <a href="{{base}}/runs" {{if eq .Page "runs"}}class="on"{{end}}>Runs</a>
+  <a href="{{base}}/workers" {{if eq .Page "workers"}}class="on"{{end}}>Workers</a>
   <span id="stream" class="muted">live: connecting</span>
 </nav>
 {{if .Flash}}<p class="flash">{{.Flash}}</p>{{end}}

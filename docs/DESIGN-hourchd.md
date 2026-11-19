@@ -421,7 +421,7 @@ Every route outside `/v1/worker/` takes a submitter token (`Authorization: Beare
 
 ### Web UI
 
-Served at `/ui` (`/` redirects to `/ui/runs`), basic auth from `ui.htpasswd_file` (bcrypt only). The POST actions (cancel run, retry run, cancel job) also need a same-origin `Origin` or `Referer`.
+Served at `/ui` (`/` redirects to `/ui/runs`), or at `{ui.path_prefix}/ui` when `ui.path_prefix` is set (default `""`; e.g. `/p` serves `/p/ui/...`, and `/`, `/p` and `/p/` redirect to `/p/ui/runs`). The prefix is for a reverse proxy that shares a host between services and forwards the full path without stripping or rewriting it; every URL the pages, script and redirects emit carries it. It must start with `/`, must not end with `/`, and must not contain `..`. The `/v1` API is never prefixed. Basic auth from `ui.htpasswd_file` (bcrypt only). The POST actions (cancel run, retry run, cancel job) also need a same-origin `Origin` or `Referer`.
 
 - **Runs.** List with status, number, workflow, submitter, age, duration, job counts; filter by workflow and status.
 - **Run.** The job graph (SVG, boxes and arrows from dependencies, coloured by status), params, outputs, cancel and retry buttons.
@@ -490,7 +490,7 @@ powerwarden:
   refresh: 15s
 
 events: {ring_size: 1000, heartbeat: 15s}
-ui:     {enabled: true, htpasswd_file: /etc/hourchd/ui.htpasswd}
+ui:     {enabled: true, htpasswd_file: /etc/hourchd/ui.htpasswd, path_prefix: ""}  # "/p" serves /p/ui/...
 ```
 
 ```yaml

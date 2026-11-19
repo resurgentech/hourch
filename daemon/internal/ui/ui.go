@@ -1,4 +1,4 @@
-// Package ui is hourchd's operator web UI at /ui (docs/DESIGN-hourchd.md
+// Package ui is hourchd's operator web UI at /ui, or {path_prefix}/ui (docs/DESIGN-hourchd.md
 // "Web UI"): html/template pages, live updates over /ui/events (the same hub
 // as /v1/events), the live job log over /ui/jobs/{id}/log/stream, and three
 // actions (cancel run, retry run, cancel job). Everything is behind htpasswd
@@ -48,7 +48,9 @@ type Options struct {
 	// Powerwarden returns the publisher state and its last error.
 	Powerwarden     func() (status, lastError string)
 	WorkerRetention time.Duration
-	Log             *slog.Logger
+	// PathPrefix is the config's ui.path_prefix: the UI root is PathPrefix+"/ui".
+	PathPrefix string
+	Log        *slog.Logger
 }
 
 // UI serves /ui.
@@ -57,6 +59,7 @@ type UI struct {
 	eng   *dispatch.Engine
 	log   *slog.Logger
 	pages map[string]*template.Template
+	base  string // the UI root: PathPrefix + "/ui"
 }
 
 // New parses the embedded templates.
@@ -73,7 +76,7 @@ func New(o Options) (*UI, error) {
 	if o.WorkerRetention <= 0 {
 		o.WorkerRetention = 90 * 24 * time.Hour
 	}
-	u := &UI{o: o, eng: o.Engine, log: o.Log, pages: map[string]*template.Template{}}
+	u := &UI{o: o, eng: o.Engine, log: o.Log, pages: map[string]*template.Template{}, base: o.PathPrefix + "/ui"}
 	funcs := template.FuncMap{
 		"ts":    func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05Z") },
 		"tsp":   func(t *time.Time) string { return tsp(t) },
@@ -93,6 +96,7 @@ func New(o Options) (*UI, error) {
 		"join":    strings.Join,
 		"artpath": artPath,
 		"pe":      url.PathEscape,
+		"base":    func() string { return u.base },
 		"exit": func(p *int) string {
 			if p == nil {
 				return ""
@@ -101,12 +105,12 @@ func New(o Options) (*UI, error) {
 		},
 		"terminal": func(s any) bool { return store.TerminalJob(fmt.Sprint(s)) },
 	}
-	base, err := template.New("layout.html").Funcs(funcs).ParseFS(assets, "templates/layout.html")
+	root, err := template.New("layout.html").Funcs(funcs).ParseFS(assets, "templates/layout.html")
 	if err != nil {
 		return nil, err
 	}
 	for _, p := range []string{"runs", "run", "job", "workers"} {
-		t, err := template.Must(base.Clone()).ParseFS(assets, "templates/"+p+".html")
+		t, err := template.Must(root.Clone()).ParseFS(assets, "templates/"+p+".html")
 		if err != nil {
 			return nil, err
 		}
@@ -115,31 +119,38 @@ func New(o Options) (*UI, error) {
 	return u, nil
 }
 
-// Register adds the /ui routes and the site-root redirect to mux.
+// Register adds the UI routes (under PathPrefix+"/ui") and the site-root
+// redirect to mux.
 func (u *UI) Register(mux *http.ServeMux) {
 	static, _ := fs.Sub(assets, "static")
+	b := u.base
 	get := func(pattern string, h http.Handler) { mux.Handle("GET "+pattern, u.auth(h)) }
 	post := func(pattern string, h http.HandlerFunc) { mux.Handle("POST "+pattern, u.auth(u.sameOrigin(h))) }
+	toRuns := http.RedirectHandler(b+"/runs", http.StatusSeeOther)
 	// The bare site root goes to the UI; the redirect itself needs no auth.
-	mux.Handle("GET /{$}", http.RedirectHandler("/ui/runs", http.StatusSeeOther))
-	get("/ui/{$}", http.RedirectHandler("/ui/runs", http.StatusSeeOther))
-	get("/ui", http.RedirectHandler("/ui/runs", http.StatusSeeOther))
-	get("/ui/static/", http.StripPrefix("/ui/static/", http.FileServerFS(static)))
-	get("/ui/events", u.forward(func(*http.Request) string { return "/v1/events" }))
-	get("/ui/runs", http.HandlerFunc(u.runs))
-	get("/ui/runs/{id}", http.HandlerFunc(u.run))
-	get("/ui/jobs/{id}", http.HandlerFunc(u.job))
-	get("/ui/jobs/{id}/log", u.forward(func(r *http.Request) string { return "/v1/jobs/" + url.PathEscape(r.PathValue("id")) + "/log" }))
-	get("/ui/jobs/{id}/log/stream", u.forward(func(r *http.Request) string {
+	mux.Handle("GET /{$}", toRuns)
+	if p := u.o.PathPrefix; p != "" {
+		get(p, toRuns)
+		get(p+"/{$}", toRuns)
+	}
+	get(b+"/{$}", toRuns)
+	get(b, toRuns)
+	get(b+"/static/", http.StripPrefix(b+"/static/", http.FileServerFS(static)))
+	get(b+"/events", u.forward(func(*http.Request) string { return "/v1/events" }))
+	get(b+"/runs", http.HandlerFunc(u.runs))
+	get(b+"/runs/{id}", http.HandlerFunc(u.run))
+	get(b+"/jobs/{id}", http.HandlerFunc(u.job))
+	get(b+"/jobs/{id}/log", u.forward(func(r *http.Request) string { return "/v1/jobs/" + url.PathEscape(r.PathValue("id")) + "/log" }))
+	get(b+"/jobs/{id}/log/stream", u.forward(func(r *http.Request) string {
 		return "/v1/jobs/" + url.PathEscape(r.PathValue("id")) + "/log/stream"
 	}))
-	get("/ui/jobs/{id}/artifacts/{path...}", u.forward(func(r *http.Request) string {
+	get(b+"/jobs/{id}/artifacts/{path...}", u.forward(func(r *http.Request) string {
 		return "/v1/jobs/" + url.PathEscape(r.PathValue("id")) + "/artifacts/" + artPath(r.PathValue("path"))
 	}))
-	get("/ui/workers", http.HandlerFunc(u.workers))
-	post("/ui/runs/{id}/cancel", u.postCancelRun)
-	post("/ui/runs/{id}/retry", u.postRetryRun)
-	post("/ui/jobs/{id}/cancel", u.postCancelJob)
+	get(b+"/workers", http.HandlerFunc(u.workers))
+	post(b+"/runs/{id}/cancel", u.postCancelRun)
+	post(b+"/runs/{id}/retry", u.postRetryRun)
+	post(b+"/jobs/{id}/cancel", u.postCancelJob)
 }
 
 // ---- auth, CSRF, forwarding ----
@@ -302,7 +313,7 @@ func (u *UI) runs(w http.ResponseWriter, r *http.Request) {
 			v.Set("status", f.Status)
 		}
 		v.Set("before", runs[len(runs)-1].ID)
-		older = "/ui/runs?" + v.Encode()
+		older = u.base + "/runs?" + v.Encode()
 	}
 	h := u.header(r, "runs")
 	if bad != "" {
@@ -451,7 +462,7 @@ func (u *UI) job(w http.ResponseWriter, r *http.Request) {
 		LogSrc   string
 		Terminal bool
 	}{u.header(r, "job"), d, run, sortedKV(j.Env), sortedKV(outs), links, attempt,
-		fmt.Sprintf("/ui/jobs/%s/log/stream?attempt=%d", url.PathEscape(id), attempt), store.TerminalJob(j.Status)})
+		fmt.Sprintf("%s/jobs/%s/log/stream?attempt=%d", u.base, url.PathEscape(id), attempt), store.TerminalJob(j.Status)})
 }
 
 func (u *UI) workers(w http.ResponseWriter, r *http.Request) {
@@ -472,14 +483,15 @@ func (u *UI) workers(w http.ResponseWriter, r *http.Request) {
 
 // ---- actions ----
 
-func back(w http.ResponseWriter, r *http.Request, to string, err error, ok string) {
+// back redirects to a UI path (relative to the UI root) with a flash message.
+func (u *UI) back(w http.ResponseWriter, r *http.Request, to string, err error, ok string) {
 	q := url.Values{}
 	if err != nil {
 		q.Set("err", err.Error())
 	} else if ok != "" {
 		q.Set("ok", ok)
 	}
-	http.Redirect(w, r, to+"?"+q.Encode(), http.StatusSeeOther)
+	http.Redirect(w, r, u.base+to+"?"+q.Encode(), http.StatusSeeOther)
 }
 
 func (u *UI) postCancelRun(w http.ResponseWriter, r *http.Request) {
@@ -490,7 +502,7 @@ func (u *UI) postCancelRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u.log.Info("ui: cancel run", "run", id, "user", user(r), "error", err)
-	back(w, r, "/ui/runs/"+url.PathEscape(id), err, "cancel requested")
+	u.back(w, r, "/runs/"+url.PathEscape(id), err, "cancel requested")
 }
 
 // ErrRetrySecrets: the run used secrets and its stored secrets are gone
@@ -517,16 +529,16 @@ func (u *UI) postRetryRun(w http.ResponseWriter, r *http.Request) {
 	}
 	if !u.canRetry(run) {
 		u.log.Info("ui: retry refused (secrets gone)", "run", id, "user", user(r))
-		back(w, r, "/ui/runs/"+url.PathEscape(id), ErrRetrySecrets, "")
+		u.back(w, r, "/runs/"+url.PathEscape(id), ErrRetrySecrets, "")
 		return
 	}
 	nr, err := u.eng.Retry(r.Context(), "ui:"+user(r), id, nil)
 	u.log.Info("ui: retry run", "run", id, "new_run", nr.ID, "user", user(r), "error", err)
 	if err != nil {
-		back(w, r, "/ui/runs/"+url.PathEscape(id), fmt.Errorf("retry failed: %v", err), "")
+		u.back(w, r, "/runs/"+url.PathEscape(id), fmt.Errorf("retry failed: %v", err), "")
 		return
 	}
-	back(w, r, "/ui/runs/"+url.PathEscape(nr.ID), nil, fmt.Sprintf("retry of %s #%d", run.Workflow, run.Number))
+	u.back(w, r, "/runs/"+url.PathEscape(nr.ID), nil, fmt.Sprintf("retry of %s #%d", run.Workflow, run.Number))
 }
 
 func (u *UI) postCancelJob(w http.ResponseWriter, r *http.Request) {
@@ -537,7 +549,7 @@ func (u *UI) postCancelJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u.log.Info("ui: cancel job", "job", id, "user", user(r), "error", err)
-	back(w, r, "/ui/jobs/"+url.PathEscape(id), err, "cancel requested")
+	u.back(w, r, "/jobs/"+url.PathEscape(id), err, "cancel requested")
 }
 
 // ---- formatting ----

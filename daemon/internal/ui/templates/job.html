@@ -1,9 +1,9 @@
 {{define "content"}}
 {{with .Job}}
 <h1>{{.Name}} <span class="st st-{{.Status}}">{{.Status}}</span></h1>
-<p><a href="/ui/runs/{{pe .RunId}}">{{$.Run.Workflow}} #{{$.Run.Number}}</a> <span class="muted mono">{{.Id}}</span></p>
+<p><a href="{{base}}/runs/{{pe .RunId}}">{{$.Run.Workflow}} #{{$.Run.Number}}</a> <span class="muted mono">{{.Id}}</span></p>
 {{if not $.Terminal}}
-<div class="actions"><form method="post" action="/ui/jobs/{{pe .Id}}/cancel"><button type="submit" class="danger">Cancel job</button></form></div>
+<div class="actions"><form method="post" action="{{base}}/jobs/{{pe .Id}}/cancel"><button type="submit" class="danger">Cancel job</button></form></div>
 {{end}}
 <table class="kv">
 <tr><th>Worker</th><td>{{.Worker}}</td></tr>
@@ -51,7 +51,7 @@
   <td>{{adur (ptr .StartedAt) .FinishedAt}}</td>
   <td>{{exit .ExitCode}}</td>
   <td class="bad">{{.Error}}</td>
-  <td><a href="/ui/jobs/{{pe $.Job.Id}}?attempt={{.Attempt}}">view</a> · <a href="/ui/jobs/{{pe $.Job.Id}}/log?attempt={{.Attempt}}">raw</a></td>
+  <td><a href="{{base}}/jobs/{{pe $.Job.Id}}?attempt={{.Attempt}}">view</a> · <a href="{{base}}/jobs/{{pe $.Job.Id}}/log?attempt={{.Attempt}}">raw</a></td>
 </tr>
 {{else}}
 <tr><td colspan="8" class="muted">Not started.</td></tr>
@@ -66,7 +66,7 @@
 <table>
 <thead><tr><th>Path</th><th>Size</th></tr></thead>
 <tbody>
-{{range $.Links}}<tr><td><a href="/ui/jobs/{{pe $.Job.Id}}/artifacts/{{artpath .Path}}">{{.Path}}</a></td><td>{{.Size}}</td></tr>
+{{range $.Links}}<tr><td><a href="{{base}}/jobs/{{pe $.Job.Id}}/artifacts/{{artpath .Path}}">{{.Path}}</a></td><td>{{.Size}}</td></tr>
 {{else}}<tr><td colspan="2" class="muted">{{if .Artifacts}}Declared: {{join .Artifacts ", "}} (not uploaded){{else}}None declared.{{end}}</td></tr>
 {{end}}
 </tbody>

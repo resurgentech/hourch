@@ -4,10 +4,10 @@
 <p class="muted mono">{{.Id}}</p>
 <div class="actions">
   {{if eq .Status "running"}}
-  <form method="post" action="/ui/runs/{{pe .Id}}/cancel"><button type="submit" class="danger">Cancel run</button></form>
+  <form method="post" action="{{base}}/runs/{{pe .Id}}/cancel"><button type="submit" class="danger">Cancel run</button></form>
   {{end}}
   {{if ne .Status "running"}}{{if $.CanRetry}}
-  <form method="post" action="/ui/runs/{{pe .Id}}/retry"><button type="submit">Retry run</button></form>
+  <form method="post" action="{{base}}/runs/{{pe .Id}}/retry"><button type="submit">Retry run</button></form>
   {{else}}
   <span class="muted" title="hourchd keeps a run's secrets only in its own memory-keyed store: they are deleted once every secret-using job succeeds, and lost when hourchd restarts.">Retry: this run's stored secrets are gone (hourchd restarted, or its secret-using jobs succeeded); run the workflow binary again.</span>
   {{end}}{{end}}
@@ -28,7 +28,7 @@
 <defs><marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 L8 4 L0 8 z" class="arrowhead"></path></marker></defs>
 {{range .Graph.Edges}}<path class="edge e-{{.Status}}" d="{{.D}}" marker-end="url(#arrow)"></path>
 {{end}}
-{{range .Graph.Nodes}}<a href="/ui/jobs/{{pe .ID}}"><g class="node n-{{.Status}}"><title>{{.Name}}: {{.Status}}</title>
+{{range .Graph.Nodes}}<a href="{{base}}/jobs/{{pe .ID}}"><g class="node n-{{.Status}}"><title>{{.Name}}: {{.Status}}</title>
 <rect x="{{.X}}" y="{{.Y}}" width="{{.W}}" height="{{.H}}" rx="6"></rect>
 <text x="{{.TX}}" y="{{.TY}}" class="name">{{.Label}}</text>
 <text x="{{.TX}}" y="{{.SY}}" class="status">{{.Status}}</text></g></a>
@@ -47,7 +47,7 @@
 <tbody>
 {{range .Jobs}}
 <tr>
-  <td><a href="/ui/jobs/{{pe .Id}}">{{.Name}}</a></td>
+  <td><a href="{{base}}/jobs/{{pe .Id}}">{{.Name}}</a></td>
   <td><span class="st st-{{.Status}}">{{.Status}}</span></td>
   <td>{{join .Tags ", "}}</td>
   <td>{{.Worker}}</td>
