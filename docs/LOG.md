@@ -40,3 +40,11 @@ are appended, never edited in; a hook refuses rewrites.
   and `/v1` unchanged; with `ui.auth` unset htpasswd works as before. Example config, DESIGN doc, daemon README.
 - Release: `daemon/v0.2.0` (A7a + A7b) to be tagged after review; no intra-repo require moves.
 - Commits: the commit "A7b: hourchd UI proxy identity (ui.auth: proxy)".
+
+## 2026-11-19 — A7 alignment: UI prefix and proxy settings match the shared contract
+
+- `ui.proxy.*` set while `ui.auth` is htpasswd is now a config error naming the key; secret file skips `#` lines,
+  needs each secret >= 16 characters, and is refused with any group/other bit (`mode & 0077`); `ui.path_prefix`
+  segments may hold only `A-Z a-z 0-9 . _ ~ -`; an unprefixed page has no `data-base` (byte-for-byte as before);
+  `check-config` prints `config ok ui=proxy` in proxy mode. Docs and example updated. Release still `daemon/v0.2.0`.
+- Commits: the commit "A7: align UI prefix and proxy settings with the shared contract".

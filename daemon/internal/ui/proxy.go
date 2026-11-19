@@ -27,10 +27,14 @@ type ProxyAuth struct {
 	secrets      [][sha256.Size]byte
 }
 
-// NewProxyAuth reads the secret file (one secret per line; blank lines
-// skipped, surrounding whitespace trimmed). The file must not be readable by
-// group or others, and must hold at least one secret. Secret values never
-// appear in errors.
+// MinProxySecretLen is the shortest secret the secret file may hold.
+const MinProxySecretLen = 16
+
+// NewProxyAuth reads the secret file (one secret per line; surrounding
+// whitespace trimmed; blank lines and lines starting with # skipped; each
+// secret at least MinProxySecretLen characters). The file must have no group
+// or other permission bits (mode & 0077 == 0), and must hold at least one
+// secret. Secret values never appear in errors.
 func NewProxyAuth(secretFile, secretHeader, userHeader string) (*ProxyAuth, error) {
 	if secretFile == "" || secretHeader == "" || userHeader == "" {
 		return nil, errors.New("ui.proxy: secret_file, secret_header and user_header are required")
@@ -39,8 +43,8 @@ func NewProxyAuth(secretFile, secretHeader, userHeader string) (*ProxyAuth, erro
 	if err != nil {
 		return nil, fmt.Errorf("ui.proxy.secret_file: %w", err)
 	}
-	if fi.Mode().Perm()&0o044 != 0 {
-		return nil, fmt.Errorf("ui.proxy.secret_file %s has mode %04o; it must not be readable by group or others (want 0600)", secretFile, fi.Mode().Perm())
+	if fi.Mode().Perm()&0o077 != 0 {
+		return nil, fmt.Errorf("ui.proxy.secret_file %s has mode %04o; it must have no group or other permissions (want 0600)", secretFile, fi.Mode().Perm())
 	}
 	data, err := os.ReadFile(secretFile)
 	if err != nil {
@@ -52,10 +56,15 @@ func NewProxyAuth(secretFile, secretHeader, userHeader string) (*ProxyAuth, erro
 	}
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	sc.Buffer(nil, 1<<20)
-	for sc.Scan() {
-		if line := strings.TrimSpace(sc.Text()); line != "" {
-			p.secrets = append(p.secrets, sha256.Sum256([]byte(line)))
+	for n := 1; sc.Scan(); n++ {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
 		}
+		if len(line) < MinProxySecretLen {
+			return nil, fmt.Errorf("ui.proxy.secret_file %s: line %d: a secret must be at least %d characters", secretFile, n, MinProxySecretLen)
+		}
+		p.secrets = append(p.secrets, sha256.Sum256([]byte(line)))
 	}
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("ui.proxy.secret_file %s: %w", secretFile, err)

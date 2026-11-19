@@ -155,13 +155,13 @@ func TestUIPathPrefix(t *testing.T) {
 	if got := Default().UI.PathPrefix; got != "" {
 		t.Fatalf("default path_prefix = %q", got)
 	}
-	for _, p := range []string{"", "/p", "/a/b"} {
+	for _, p := range []string{"", "/p", "/a/b", "/svc-1/a.b_c~d"} {
 		c, err := parseReq("ui:\n  path_prefix: \"" + p + "\"\n")
 		if err != nil || c.UI.PathPrefix != p {
 			t.Errorf("path_prefix %q: %v, %q", p, err, c.UI.PathPrefix)
 		}
 	}
-	for _, p := range []string{"p", "/p/", "/", "/a/../b", "/.."} {
+	for _, p := range []string{"p", "/p/", "/", "/a/../b", "/..", "/a//b", "/a b", "/a{b}", "/a?b", "/a#b", "/a%2fb", "/./a", "//p"} {
 		_, err := parseReq("ui:\n  path_prefix: \"" + p + "\"\n")
 		if err == nil || !strings.Contains(err.Error(), "ui.path_prefix") {
 			t.Errorf("path_prefix %q: want ui.path_prefix error, got %v", p, err)
@@ -188,12 +188,18 @@ func TestUIAuth(t *testing.T) {
 	if _, err := parseReq("ui:\n  auth: ldap\n"); err == nil || !strings.Contains(err.Error(), "ui.auth") {
 		t.Fatalf("unknown auth: %v", err)
 	}
-	// htpasswd mode still needs the file, and ignores ui.proxy.
+	// htpasswd mode still needs the file.
 	if _, err := parseReq("ui:\n  htpasswd_file: \"\"\n"); err == nil || !strings.Contains(err.Error(), "ui.htpasswd_file") {
 		t.Fatalf("htpasswd without file: %v", err)
 	}
-	if _, err := parseReq("ui:\n  proxy:\n    user_header: \"bad header\"\n"); err != nil {
-		t.Fatalf("proxy keys ignored under htpasswd: %v", err)
+	// ui.proxy.* under htpasswd (unset or explicit) is an error naming the key.
+	for _, auth := range []string{"", "  auth: htpasswd\n"} {
+		for _, key := range []string{"secret_file", "secret_header", "user_header"} {
+			y := "ui:\n" + auth + "  proxy:\n    " + key + ": X-Something\n"
+			if _, err := parseReq(y); err == nil || !strings.Contains(err.Error(), "ui.proxy."+key) {
+				t.Errorf("%q: want ui.proxy.%s error, got %v", y, key, err)
+			}
+		}
 	}
 	// Each proxy key is required.
 	for _, key := range []string{"secret_file", "secret_header", "user_header"} {

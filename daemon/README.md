@@ -78,13 +78,17 @@ tokens file names `hourchd`. `powerwarden.url: ""` disables the publisher.
 `htpasswd`): `htpasswd -B -c ui.htpasswd alice` (bcrypt only; other
 hash types are a startup error). With `ui.auth: proxy` a reverse proxy that
 authenticates users (e.g. oauth2-proxy) names the user: set all of
-`ui.proxy.secret_file` (mode 0600, one shared secret per line),
-`ui.proxy.secret_header` and `ui.proxy.user_header` (no defaults); the proxy
+`ui.proxy.secret_file` (mode 0600 with no group or other bits; one shared
+secret per line, each at least 16 characters; blank lines and `#` lines
+skipped), `ui.proxy.secret_header` and `ui.proxy.user_header` (no defaults;
+setting any of them while `ui.auth` is `htpasswd` is an error); the proxy
 must strip client-supplied copies of both headers and set them itself. See
-the DESIGN doc, "Web UI". `ui.enabled: false` turns the UI off.
+the DESIGN doc, "Web UI". In proxy mode `check-config` prints
+`config ok ui=proxy`. `ui.enabled: false` turns the UI off.
 `ui.path_prefix` (default `""`) moves the UI to `{prefix}/ui` for a reverse
 proxy that keeps the prefix in the path (`/p` serves `/p/ui/...`; it must start
-with `/`, not end with `/`, and not contain `..`). The `/v1` API is not prefixed.
+with `/`, not end with `/`, not contain `..`, and each segment may hold only
+`A-Z a-z 0-9 . _ ~ -`). The `/v1` API is not prefixed.
 
 ## Web UI
 

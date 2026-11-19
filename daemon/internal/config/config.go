@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -357,6 +358,11 @@ func (c Config) Validate() error {
 		case strings.Contains(p, ".."):
 			return fmt.Errorf("ui.path_prefix %q must not contain ..", p)
 		}
+		for _, seg := range strings.Split(p[1:], "/") {
+			if seg == "" || seg == "." || !prefixSegRe.MatchString(seg) {
+				return fmt.Errorf("ui.path_prefix %q: each segment must be non-empty, not \".\", and only A-Z a-z 0-9 . _ ~ -", p)
+			}
+		}
 	}
 	if c.Backup.MinioPrefix != "" && !strings.HasSuffix(c.Backup.MinioPrefix, "/") {
 		return fmt.Errorf("backup.minio_prefix must end with /")
@@ -374,6 +380,9 @@ type UIProxy struct {
 	// UserHeader carries the username the proxy sets.
 	UserHeader string `yaml:"user_header"`
 }
+
+// prefixSegRe is the character rule for each segment of ui.path_prefix.
+var prefixSegRe = regexp.MustCompile(`^[A-Za-z0-9._~-]+$`)
 
 // validHeaderName reports whether s is an HTTP field name (RFC 9110 token).
 func validHeaderName(s string) bool {
@@ -400,6 +409,13 @@ func (u UI) validate() error {
 	case "htpasswd":
 		if u.HtpasswdFile == "" {
 			return fmt.Errorf("ui.htpasswd_file is required when ui.enabled is true and ui.auth is htpasswd")
+		}
+		for _, k := range []struct{ name, v string }{
+			{"secret_file", u.Proxy.SecretFile}, {"secret_header", u.Proxy.SecretHeader}, {"user_header", u.Proxy.UserHeader},
+		} {
+			if k.v != "" {
+				return fmt.Errorf("ui.proxy.%s is set but ui.auth is htpasswd; set ui.auth: proxy or remove it", k.name)
+			}
 		}
 	case "proxy":
 		for _, k := range []struct{ name, v string }{

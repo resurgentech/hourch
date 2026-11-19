@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="{{base}}/static/app.css">
 <script src="{{base}}/static/app.js" defer></script>
 </head>
-<body data-base="{{base}}">
+<body{{if prefix}} data-base="{{base}}"{{end}}>
 <nav>
   <strong>hourchd</strong>
   <a href="{{base}}/runs" {{if eq .Page "runs"}}class="on"{{end}}>Runs</a>

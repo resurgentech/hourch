@@ -106,6 +106,9 @@ func New(o Options) (*UI, error) {
 		"artpath": artPath,
 		"pe":      url.PathEscape,
 		"base":    func() string { return u.base },
+		// prefix is ui.path_prefix; layout.html adds data-base only when it is set,
+		// so an unprefixed page is exactly as before the setting existed.
+		"prefix": func() string { return u.o.PathPrefix },
 		"exit": func(p *int) string {
 			if p == nil {
 				return ""

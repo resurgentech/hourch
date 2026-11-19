@@ -241,7 +241,8 @@ func TestProxyPathPrefix(t *testing.T) {
 }
 
 func TestProxySecretFilePermissions(t *testing.T) {
-	for _, mode := range []os.FileMode{0o640, 0o604, 0o644, 0o660} {
+	// Any group or other bit refuses the file (the tokens file's rule).
+	for _, mode := range []os.FileMode{0o640, 0o604, 0o644, 0o660, 0o620, 0o602, 0o610, 0o601} {
 		cfg := proxyConfig(t, mode, pSecret1+"\n")
 		if err := app.Check(cfg); err == nil || !strings.Contains(err.Error(), "ui.proxy.secret_file") || strings.Contains(err.Error(), pSecret1) {
 			t.Errorf("Check mode %o: %v", mode, err)
@@ -252,10 +253,18 @@ func TestProxySecretFilePermissions(t *testing.T) {
 			t.Errorf("Build mode %o succeeded", mode)
 		}
 	}
-	for name, content := range map[string]string{"empty": "", "blank lines": "\n  \r\n\n"} {
+	for name, content := range map[string]string{
+		"empty":            "",
+		"blank lines":      "\n  \r\n\n",
+		"comments only":    "# rotate on the first of the month\n#another-comment-line-here\n",
+		"15-char secret":   pSecret1 + "\n" + "fifteen-chars-x\n",
+		"short and commnt": "# fine comment\nshort\n",
+	} {
 		cfg := proxyConfig(t, 0o600, content)
 		if err := app.Check(cfg); err == nil {
 			t.Errorf("Check %s secret file succeeded", name)
+		} else if strings.Contains(err.Error(), "fifteen-chars-x") || strings.Contains(err.Error(), "short\n") {
+			t.Errorf("Check %s: error shows the secret: %v", name, err)
 		}
 		if a, err := app.Build(cfg, app.Deps{Objects: objects.NewMem(), Log: quiet()}); err == nil {
 			a.Close()
@@ -265,6 +274,10 @@ func TestProxySecretFilePermissions(t *testing.T) {
 	cfg := proxyConfig(t, 0o600, pSecret1+"\n")
 	if err := app.Check(cfg); err != nil {
 		t.Errorf("Check ok: %v", err)
+	}
+	// Comment lines are skipped, not secrets.
+	if err := app.Check(proxyConfig(t, 0o600, "# a comment that is long enough\n"+pSecret1+"\n")); err != nil {
+		t.Errorf("Check with a comment line: %v", err)
 	}
 	cfg.UI.Proxy.SecretFile += ".missing"
 	if err := app.Check(cfg); err == nil {
@@ -317,4 +330,21 @@ func writeHtpasswd(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return f
+}
+
+func TestProxyCommentLineIsNotASecret(t *testing.T) {
+	const comment = "# rotated on the first of the month"
+	cfg := proxyConfig(t, 0o600, comment+"\n"+pSecret1+"\n")
+	p, err := ui.NewProxyAuth(cfg.UI.Proxy.SecretFile, pSecretH, pUserH)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for secret, want := range map[string]bool{comment: false, pSecret1: true} {
+		r := httptest.NewRequest("GET", "/ui/runs", nil)
+		r.Header.Set(pSecretH, secret)
+		r.Header.Set(pUserH, "alice")
+		if _, ok := p.User(r); ok != want {
+			t.Errorf("secret %q accepted = %v, want %v", secret, ok, want)
+		}
+	}
 }

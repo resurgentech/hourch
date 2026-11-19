@@ -85,8 +85,17 @@ func checkConfig(args []string) error {
 	if err := app.Check(cfg); err != nil {
 		return err
 	}
-	fmt.Println("config ok")
+	fmt.Println(checkSummary(cfg))
 	return nil
+}
+
+// checkSummary is check-config's success line: "config ok", plus " ui=proxy"
+// when the UI trusts a reverse proxy for identity.
+func checkSummary(cfg config.Config) string {
+	if cfg.UI.Enabled && cfg.UI.Auth == "proxy" {
+		return "config ok ui=proxy"
+	}
+	return "config ok"
 }
 
 func serve(ctx context.Context, args []string) error {

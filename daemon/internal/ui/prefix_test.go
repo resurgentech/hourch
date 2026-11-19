@@ -103,7 +103,9 @@ func TestPathPrefixPagesMatchUnprefixed(t *testing.T) {
 			if strings.Contains(pre, `"/ui/`) {
 				t.Errorf("/p/ui%s (partial=%v) has a stray /ui/ URL", pg, partial)
 			}
-			if got := strings.ReplaceAll(pre, "/p/ui", "/ui"); ptrRe.ReplaceAllString(got, "0x") != ptrRe.ReplaceAllString(plain, "0x") {
+			// The prefixed page also carries data-base on <body>; the plain one has none.
+			got := strings.Replace(strings.ReplaceAll(pre, "/p/ui", "/ui"), `<body data-base="/ui">`, "<body>", 1)
+			if ptrRe.ReplaceAllString(got, "0x") != ptrRe.ReplaceAllString(plain, "0x") {
 				t.Errorf("%s (partial=%v): prefixed body differs from plain\nplain:    %s\nprefixed: %s", pg, partial, plain, got)
 			}
 			if !partial && !strings.Contains(plain, `href="/ui/runs"`) {
@@ -120,6 +122,22 @@ func TestPathPrefixPagesMatchUnprefixed(t *testing.T) {
 		}
 		if strings.Contains(pre, `"/ui/`) || strings.Contains(pre, `'/ui/`) {
 			t.Errorf("static %s has a stray /ui/ URL", f)
+		}
+	}
+}
+
+// With no prefix the page head and <body> tag are exactly what they were
+// before ui.path_prefix existed: no data-base attribute.
+func TestUnprefixedBodyTagPinned(t *testing.T) {
+	e := setup(t)
+	pages, _, _, _ := e.fixture()
+	const head = "<link rel=\"stylesheet\" href=\"/ui/static/app.css\">\n" +
+		"<script src=\"/ui/static/app.js\" defer></script>\n" +
+		"</head>\n<body>\n<nav>\n  <strong>hourchd</strong>\n"
+	for _, pg := range pages {
+		body := e.page("/ui" + pg)
+		if !strings.Contains(body, head) || strings.Contains(body, "data-base") {
+			t.Errorf("%s: unprefixed head/body changed:\n%s", pg, body[:min(len(body), 600)])
 		}
 	}
 }

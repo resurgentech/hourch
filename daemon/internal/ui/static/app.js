@@ -1,9 +1,10 @@
 // hourchd UI: re-render the live region when {base}/events reports a change,
 // and stream a job's log from the server-built data-src of #log.
-// base is the UI root (the path prefix followed by /ui), from the body data-base.
+// base is the UI root (the path prefix followed by /ui), from the body
+// data-base, which is present only when a prefix is set; otherwise /ui.
 (function () {
   "use strict";
-  var base = document.body.getAttribute("data-base") || "";
+  var base = document.body.getAttribute("data-base") || "/ui";
   var status = document.getElementById("stream");
   var live = document.getElementById("live");
 
