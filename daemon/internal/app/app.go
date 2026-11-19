@@ -54,7 +54,7 @@ type App struct {
 
 // Check validates everything that can be checked without serving: the
 // config (already parsed), the tokens file, the powerwarden token and the
-// UI htpasswd file. (The run-secrets key has no file: Build generates it.)
+// UI credentials (the htpasswd file, or the proxy secret file and its mode). (The run-secrets key has no file: Build generates it.)
 func Check(cfg config.Config) error {
 	if _, err := httpapi.LoadTokens(cfg.TokensFile); err != nil {
 		return err
@@ -64,12 +64,25 @@ func Check(cfg config.Config) error {
 			return err
 		}
 	}
-	if cfg.UI.Enabled {
-		if _, err := ui.LoadHtpasswd(cfg.UI.HtpasswdFile); err != nil {
-			return err
-		}
+	if _, _, err := loadUIAuth(cfg); err != nil {
+		return err
 	}
 	return nil
+}
+
+// loadUIAuth loads what the configured UI auth mode needs: the htpasswd
+// file, or the proxy secret file (whose permissions it checks). Both are nil
+// when the UI is disabled.
+func loadUIAuth(cfg config.Config) (*ui.Htpasswd, *ui.ProxyAuth, error) {
+	if !cfg.UI.Enabled {
+		return nil, nil, nil
+	}
+	if cfg.UI.Auth == "proxy" {
+		p, err := ui.NewProxyAuth(cfg.UI.Proxy.SecretFile, cfg.UI.Proxy.SecretHeader, cfg.UI.Proxy.UserHeader)
+		return nil, p, err
+	}
+	u, err := ui.LoadHtpasswd(cfg.UI.HtpasswdFile)
+	return u, nil, err
 }
 
 // Build opens the state and wires the components.
@@ -98,11 +111,12 @@ func Build(cfg config.Config, d Deps) (*App, error) {
 			return nil, err
 		}
 	}
-	var users *ui.Htpasswd
+	users, proxy, err := loadUIAuth(cfg)
+	if err != nil {
+		return nil, err
+	}
 	if cfg.UI.Enabled {
-		if users, err = ui.LoadHtpasswd(cfg.UI.HtpasswdFile); err != nil {
-			return nil, err
-		}
+		d.Log.Info("ui auth", "mode", cfg.UI.Auth)
 	}
 	if d.Objects == nil {
 		d.Objects, err = objects.NewMinIO(objects.MinIOConfig{
@@ -167,8 +181,8 @@ func Build(cfg config.Config, d Deps) (*App, error) {
 		return fail(err)
 	}
 	mux := http.NewServeMux()
-	if users != nil {
-		u, err := ui.New(ui.Options{Engine: eng, API: srv, Users: users, PathPrefix: cfg.UI.PathPrefix, Powerwarden: pwState,
+	if cfg.UI.Enabled {
+		u, err := ui.New(ui.Options{Engine: eng, API: srv, Users: users, Proxy: proxy, PathPrefix: cfg.UI.PathPrefix, Powerwarden: pwState,
 			WorkerRetention: cfg.Retention.Rows.D(), Log: d.Log.With("component", "ui")})
 		if err != nil {
 			return fail(err)

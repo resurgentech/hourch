@@ -2,7 +2,9 @@
 // "Web UI"): html/template pages, live updates over /ui/events (the same hub
 // as /v1/events), the live job log over /ui/jobs/{id}/log/stream, and three
 // actions (cancel run, retry run, cancel job). Everything is behind htpasswd
-// basic auth (bcrypt only); POSTs also pass an Origin/Referer check. Log,
+// basic auth (bcrypt only) or, with ui.auth: proxy, behind a reverse proxy
+// that names the user and presents a shared secret (ProxyAuth); POSTs also
+// pass an Origin/Referer check. Log,
 // artifact and event routes are the API's own handlers, called in process
 // with the UI user as an operator (httpapi.AsUIUser), so downloads stream
 // through hourchd exactly as with a token.
@@ -14,6 +16,7 @@ package ui
 
 import (
 	"bytes"
+	"context"
 	"embed"
 	"errors"
 	"fmt"
@@ -44,7 +47,10 @@ var assets embed.FS
 type Options struct {
 	Engine *dispatch.Engine
 	API    http.Handler // the httpapi server
-	Users  *Htpasswd
+	// Exactly one of Users (htpasswd basic auth) and Proxy (a trusted
+	// reverse proxy names the user) is set.
+	Users *Htpasswd
+	Proxy *ProxyAuth
 	// Powerwarden returns the publisher state and its last error.
 	Powerwarden     func() (status, lastError string)
 	WorkerRetention time.Duration
@@ -64,8 +70,11 @@ type UI struct {
 
 // New parses the embedded templates.
 func New(o Options) (*UI, error) {
-	if o.Engine == nil || o.API == nil || o.Users == nil {
-		return nil, errors.New("ui: engine, api and users are required")
+	if o.Engine == nil || o.API == nil {
+		return nil, errors.New("ui: engine and api are required")
+	}
+	if (o.Users == nil) == (o.Proxy == nil) {
+		return nil, errors.New("ui: exactly one of users and proxy is required")
 	}
 	if o.Log == nil {
 		o.Log = slog.Default()
@@ -157,15 +166,27 @@ func (u *UI) Register(mux *http.ServeMux) {
 
 func (u *UI) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user, pass, ok := r.BasicAuth()
-		if !ok || !u.o.Users.Check(user, pass) {
-			w.Header().Set("WWW-Authenticate", `Basic realm="hourchd", charset="UTF-8"`)
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
+		var name string
+		if u.o.Proxy != nil {
+			// Proxy mode: no basic-auth prompt, and basic-auth credentials are ignored.
+			n, ok := u.o.Proxy.User(r)
+			if !ok {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			name = n
+		} else {
+			n, pass, ok := r.BasicAuth()
+			if !ok || !u.o.Users.Check(n, pass) {
+				w.Header().Set("WWW-Authenticate", `Basic realm="hourchd", charset="UTF-8"`)
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			name = n
 		}
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userKey{}, name)))
 	})
 }
 
@@ -201,12 +222,18 @@ func (u *UI) forward(apiPath func(*http.Request) string) http.Handler {
 		r2.RequestURI = nu.RequestURI()
 		r2.Header = r.Header.Clone()
 		r2.Header.Del("Authorization") // basic auth is not a bearer token
+		if u.o.Proxy != nil {
+			u.o.Proxy.strip(r2.Header) // the API never sees the shared secret
+		}
 		u.o.API.ServeHTTP(w, r2)
 	})
 }
 
+type userKey struct{}
+
+// user is the authenticated UI user, set by auth (either mode).
 func user(r *http.Request) string {
-	n, _, _ := r.BasicAuth()
+	n, _ := r.Context().Value(userKey{}).(string)
 	return n
 }
 

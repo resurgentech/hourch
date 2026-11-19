@@ -155,10 +155,16 @@ type Events struct {
 	Heartbeat Duration `yaml:"heartbeat"`
 }
 
-// UI configures the web UI at /ui (htpasswd basic auth, bcrypt only).
+// UI configures the web UI at /ui: htpasswd basic auth (bcrypt only) or,
+// with Auth "proxy", a trusted reverse proxy that names the user.
 type UI struct {
-	Enabled      bool   `yaml:"enabled"`
+	Enabled bool `yaml:"enabled"`
+	// Auth is "htpasswd" (default) or "proxy".
+	Auth string `yaml:"auth"`
+	// HtpasswdFile applies only to Auth "htpasswd".
 	HtpasswdFile string `yaml:"htpasswd_file"`
+	// Proxy applies only to Auth "proxy", where every key is required.
+	Proxy UIProxy `yaml:"proxy"`
 	// PathPrefix moves the UI (and the site-root redirect) under a reverse
 	// proxy's path: "/p" serves /p/ui/.... "" serves /ui. The API is never
 	// prefixed.
@@ -217,7 +223,7 @@ func Default() Config {
 			Refresh:   sec(15),
 		},
 		Events: Events{RingSize: 1000, Heartbeat: sec(15)},
-		UI:     UI{Enabled: true, HtpasswdFile: "/etc/hourchd/ui.htpasswd"},
+		UI:     UI{Enabled: true, Auth: "htpasswd", HtpasswdFile: "/etc/hourchd/ui.htpasswd"},
 	}
 }
 
@@ -339,8 +345,8 @@ func (c Config) Validate() error {
 			return fmt.Errorf("powerwarden.token_file is required when powerwarden.url is set")
 		}
 	}
-	if c.UI.Enabled && c.UI.HtpasswdFile == "" {
-		return fmt.Errorf("ui.htpasswd_file is required when ui.enabled is true")
+	if err := c.UI.validate(); err != nil {
+		return err
 	}
 	if p := c.UI.PathPrefix; p != "" {
 		switch {
@@ -354,6 +360,65 @@ func (c Config) Validate() error {
 	}
 	if c.Backup.MinioPrefix != "" && !strings.HasSuffix(c.Backup.MinioPrefix, "/") {
 		return fmt.Errorf("backup.minio_prefix must end with /")
+	}
+	return nil
+}
+
+// UIProxy is ui.proxy: how hourchd trusts a reverse proxy that authenticates
+// users (forward-auth style). No key has a default.
+type UIProxy struct {
+	// SecretFile holds the shared secrets, one per line; mode 0600.
+	SecretFile string `yaml:"secret_file"`
+	// SecretHeader carries the shared secret the proxy adds to each request.
+	SecretHeader string `yaml:"secret_header"`
+	// UserHeader carries the username the proxy sets.
+	UserHeader string `yaml:"user_header"`
+}
+
+// validHeaderName reports whether s is an HTTP field name (RFC 9110 token).
+func validHeaderName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func (u UI) validate() error {
+	if !u.Enabled {
+		return nil
+	}
+	switch u.Auth {
+	case "htpasswd":
+		if u.HtpasswdFile == "" {
+			return fmt.Errorf("ui.htpasswd_file is required when ui.enabled is true and ui.auth is htpasswd")
+		}
+	case "proxy":
+		for _, k := range []struct{ name, v string }{
+			{"secret_file", u.Proxy.SecretFile}, {"secret_header", u.Proxy.SecretHeader}, {"user_header", u.Proxy.UserHeader},
+		} {
+			if k.v == "" {
+				return fmt.Errorf("ui.proxy.%s is required when ui.auth is proxy", k.name)
+			}
+		}
+		for _, k := range []struct{ name, v string }{{"secret_header", u.Proxy.SecretHeader}, {"user_header", u.Proxy.UserHeader}} {
+			if !validHeaderName(k.v) {
+				return fmt.Errorf("ui.proxy.%s %q is not a valid HTTP header name", k.name, k.v)
+			}
+		}
+		if strings.EqualFold(u.Proxy.SecretHeader, u.Proxy.UserHeader) {
+			return fmt.Errorf("ui.proxy.secret_header and ui.proxy.user_header must differ (got %q and %q)", u.Proxy.SecretHeader, u.Proxy.UserHeader)
+		}
+	default:
+		return fmt.Errorf("ui.auth %q: want htpasswd or proxy", u.Auth)
 	}
 	return nil
 }

@@ -58,6 +58,11 @@ events:
 
 ui:                                          # web UI at /ui; / redirects to /ui/runs
   enabled: true
-  htpasswd_file: /etc/hourchd/ui.htpasswd    # htpasswd -B (bcrypt only)
+  auth: htpasswd                             # htpasswd (basic auth) or proxy (a trusted reverse proxy names the user)
+  htpasswd_file: /etc/hourchd/ui.htpasswd    # htpasswd -B (bcrypt only); used only when auth: htpasswd
   path_prefix: ""                            # "" (default) serves /ui; "/p" serves /p/ui/... and / redirects to /p/ui/runs
                                              # (starts with /, no trailing /, no ..; the /v1 API is never prefixed)
+  proxy:                                     # used only when auth: proxy; all three are REQUIRED then, with no defaults
+    secret_file: ""                          # mode 0600; one shared secret per line (several allow rotation); e.g. /etc/hourchd/proxy.secret
+    secret_header: ""                        # header carrying the shared secret; e.g. X-Auth-Proxy-Secret
+    user_header: ""                          # header carrying the username; e.g. Remote-User

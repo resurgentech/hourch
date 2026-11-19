@@ -40,7 +40,7 @@ liveness to powerwarden.
 `minio.endpoint` has no default and is required; the example's host is only
 an illustration. `powerwarden.url` defaults to `""` (publisher disabled).
 `hourchd check-config --config FILE` validates the config, the tokens file,
-the powerwarden token (when enabled) and the UI htpasswd file (when enabled).
+the powerwarden token (when enabled) and the UI htpasswd file or proxy secret file (when the UI is enabled).
 
 `tokens_file` (mode 0600):
 
@@ -74,8 +74,14 @@ MinIO credentials come from the environment variables named in `minio:`
 `powerwarden.token_file` (mode 0600): the bearer token powerwarden's own
 tokens file names `hourchd`. `powerwarden.url: ""` disables the publisher.
 
-`ui.htpasswd_file`: `htpasswd -B -c ui.htpasswd alice` (bcrypt only; other
-hash types are a startup error). `ui.enabled: false` turns the UI off.
+`ui.auth` is `htpasswd` (default) or `proxy`. `ui.htpasswd_file` (only for
+`htpasswd`): `htpasswd -B -c ui.htpasswd alice` (bcrypt only; other
+hash types are a startup error). With `ui.auth: proxy` a reverse proxy that
+authenticates users (e.g. oauth2-proxy) names the user: set all of
+`ui.proxy.secret_file` (mode 0600, one shared secret per line),
+`ui.proxy.secret_header` and `ui.proxy.user_header` (no defaults); the proxy
+must strip client-supplied copies of both headers and set them itself. See
+the DESIGN doc, "Web UI". `ui.enabled: false` turns the UI off.
 `ui.path_prefix` (default `""`) moves the UI to `{prefix}/ui` for a reverse
 proxy that keeps the prefix in the path (`/p` serves `/p/ui/...`; it must start
 with `/`, not end with `/`, and not contain `..`). The `/v1` API is not prefixed.
@@ -84,7 +90,7 @@ with `/`, not end with `/`, and not contain `..`). The `/v1` API is not prefixed
 
 `https://hourchd.example.com/` redirects to `/ui/runs` (or to
 `{ui.path_prefix}/ui/runs`). Every `/ui` route needs
-basic auth from `ui.htpasswd_file`; the POST actions (cancel run, retry run,
+basic auth from `ui.htpasswd_file` (or, with `ui.auth: proxy`, the proxy headers); the POST actions (cancel run, retry run,
 cancel job) also need a same-origin `Origin` or `Referer` (CSRF guard).
 
 - **Runs**: newest first, filter by workflow and status; status, number,

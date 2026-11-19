@@ -98,7 +98,7 @@ Defaults; all in `config.yaml`.
  ──────────────────                       ──────────────                                 ───────
  workflow binary ── POST /v1/contexts ──▶ ┌──────────────── hourchd ────────────────┐
    (reads secrets)── POST /v1/runs ─────▶ │ HTTP API + web UI   SQLite (runs, jobs, │ ◀══ websocket ══▶ hourch-worker
- browser ────────── /ui (basic auth) ───▶ │ dispatcher, reaper    outputs, workers, │ ◀── HTTP data ──▶  (process or
+ browser ────────── /ui (auth)       ───▶ │ dispatcher, reaper    outputs, workers, │ ◀── HTTP data ──▶  (process or
                                           │ log store, pruner     counters, events) │                     container jobs)
                                           └──────┬──────────────────────┬───────────┘
                                                  │ objects              │ demand, liveness (optional)
@@ -421,7 +421,16 @@ Every route outside `/v1/worker/` takes a submitter token (`Authorization: Beare
 
 ### Web UI
 
-Served at `/ui` (`/` redirects to `/ui/runs`), or at `{ui.path_prefix}/ui` when `ui.path_prefix` is set (default `""`; e.g. `/p` serves `/p/ui/...`, and `/`, `/p` and `/p/` redirect to `/p/ui/runs`). The prefix is for a reverse proxy that shares a host between services and forwards the full path without stripping or rewriting it; every URL the pages, script and redirects emit carries it. It must start with `/`, must not end with `/`, and must not contain `..`. The `/v1` API is never prefixed. Basic auth from `ui.htpasswd_file` (bcrypt only). The POST actions (cancel run, retry run, cancel job) also need a same-origin `Origin` or `Referer`.
+Served at `/ui` (`/` redirects to `/ui/runs`), or at `{ui.path_prefix}/ui` when `ui.path_prefix` is set (default `""`; e.g. `/p` serves `/p/ui/...`, and `/`, `/p` and `/p/` redirect to `/p/ui/runs`). The prefix is for a reverse proxy that shares a host between services and forwards the full path without stripping or rewriting it; every URL the pages, script and redirects emit carries it. It must start with `/`, must not end with `/`, and must not contain `..`. The `/v1` API is never prefixed. Authentication is `ui.auth`: `htpasswd` (the default) is basic auth from `ui.htpasswd_file` (bcrypt only); `proxy` trusts a reverse proxy that authenticates users itself (forward-auth style, e.g. oauth2-proxy). In proxy mode the proxy must strip any client-supplied identity headers, set the username header, and add a shared-secret header; hourchd trusts the username only when the secret matches. The contract:
+
+- **Settings.** `ui.proxy.secret_file`, `ui.proxy.secret_header` and `ui.proxy.user_header` are all required in proxy mode, with no defaults (header names are settings, not conventions); the two header names must be valid HTTP header field names and must differ. They are ignored when `ui.auth` is `htpasswd`.
+- **Secret check.** A request is accepted only when the secret header, present exactly once, equals a line of the secret file (SHA-256 of the value compared in constant time against every line, no early exit). The file holds one secret per line (blank lines ignored, surrounding whitespace trimmed) and must not be readable by group or others (`mode & 0044 == 0`, e.g. 0600); otherwise startup and `check-config` fail. It is read once at startup. Rotate by adding the new line, restarting, switching the proxy to it, removing the old line, and restarting.
+- **Username.** Taken from the user header, present exactly once, and must match `^[A-Za-z0-9_.@-]{1,64}$` (exported as `ui.ProxyUserRe`). Otherwise the request gets 401.
+- **No other login.** Proxy mode has no basic-auth prompt and no htpasswd; a failed check is a plain 401 with no `WWW-Authenticate` header, and basic-auth credentials are ignored.
+- **Default unchanged.** `ui.auth: htpasswd` is the default.
+- **Caller.** The UI caller is `ui:<user>` in both modes (retry's `submitted_by`, log lines, and the in-process API calls). The secret and username headers are removed before the in-process API call, so the API never sees the shared secret. The `/v1` API knows nothing of proxy headers: a request to `/v1` needs a bearer token as ever.
+
+Proxy mode is only as safe as the network path: hourchd must be reachable only through the proxy, or the proxy must be the only party that knows the secret. The POST actions (cancel run, retry run, cancel job) also need a same-origin `Origin` or `Referer`.
 
 - **Runs.** List with status, number, workflow, submitter, age, duration, job counts; filter by workflow and status.
 - **Run.** The job graph (SVG, boxes and arrows from dependencies, coloured by status), params, outputs, cancel and retry buttons.
@@ -454,7 +463,7 @@ powerwarden is a separate service that powers hosts on and off according to dema
 
 ## Configuration
 
-`/etc/hourchd/config.yaml` for the daemon and `/etc/hourch/worker.yaml` for workers, paths overridable with `--config`. `daemon/config.yaml.example` and `worker/worker.yaml.example` hold every key with its default (the per-host worker identity keys show illustrative values). Unknown keys are a startup error. `hourchd check-config --config FILE` validates the config, the tokens file, the powerwarden token (when enabled) and the htpasswd file (when enabled).
+`/etc/hourchd/config.yaml` for the daemon and `/etc/hourch/worker.yaml` for workers, paths overridable with `--config`. `daemon/config.yaml.example` and `worker/worker.yaml.example` hold every key with its default (the per-host worker identity keys show illustrative values). Unknown keys are a startup error. `hourchd check-config --config FILE` validates the config, the tokens file, the powerwarden token (when enabled) and, when the UI is enabled, the htpasswd file (`ui.auth: htpasswd`) or the proxy secret file and its permissions (`ui.auth: proxy`).
 
 Required, with no default: `minio.endpoint` (daemon); `hourchd_url` and `worker_id` (worker). `powerwarden.url` defaults to `""`, which disables the publisher.
 
@@ -490,7 +499,9 @@ powerwarden:
   refresh: 15s
 
 events: {ring_size: 1000, heartbeat: 15s}
-ui:     {enabled: true, htpasswd_file: /etc/hourchd/ui.htpasswd, path_prefix: ""}  # "/p" serves /p/ui/...
+ui:     {enabled: true, auth: htpasswd, htpasswd_file: /etc/hourchd/ui.htpasswd, path_prefix: ""}  # "/p" serves /p/ui/...
+# ui.proxy (used only when auth: proxy; all three required then, no defaults):
+#   {secret_file: "", secret_header: "", user_header: ""}
 ```
 
 ```yaml
@@ -524,7 +535,7 @@ hourchd is one binary or container with a state volume; workers are one binary e
 
 ### Running hourchd
 
-1. Provide `config.yaml` (at least `minio.endpoint`), `tokens.yaml`, `powerwarden.token` (if the publisher is enabled) and `ui.htpasswd` (if the UI is enabled), all mode 0600, from your secret store; mount them read-only at the paths in `config.yaml.example`, and give `/var/lib/hourchd` a persistent volume.
+1. Provide `config.yaml` (at least `minio.endpoint`), `tokens.yaml`, `powerwarden.token` (if the publisher is enabled) and `ui.htpasswd` (if the UI is enabled with `ui.auth: htpasswd`) or the proxy secret file (with `ui.auth: proxy`), all mode 0600, from your secret store; mount them read-only at the paths in `config.yaml.example`, and give `/var/lib/hourchd` a persistent volume.
 2. Set the object-store credentials in the environment variables `minio.access_key_env` and `minio.secret_key_env` name (`HOURCHD_MINIO_ACCESS_KEY`, `HOURCHD_MINIO_SECRET_KEY`).
 3. Put port 8093 behind a TLS reverse proxy (e.g. `hourchd.example.com`) that passes websockets through.
 4. Run `hourchd check-config`, then `hourchd serve`. Before restarting a running hourchd, check that `runs_holding_secrets` in `/v1/healthz` is 0, or accept that those runs lose their secrets.
@@ -583,7 +594,7 @@ Considered and rejected: any persisted key makes a copy of the bucket plus the k
 - Workers and submitters hold no object-store credentials. Submitters still need access to wherever the secret values come from.
 - A job can read the worker's filesystem; jobs and workers share a trust domain. Container jobs narrow that only as far as the mounts allow, and a worker container given the docker socket is root-equivalent on its host.
 - `HOURCH_JOB_TOKEN` is minted per assignment, stored only as a hash, accepted only for counter and build routes, and revoked when the job ends. It is not a worker credential.
-- Tokens are compared in constant time against every entry. The UI's write actions (cancel, retry) require basic auth and a same-origin request. A UI retry reuses the run's stored secrets server side (they never reach the browser); it is refused once they are gone.
+- Tokens are compared in constant time against every entry. The UI's write actions (cancel, retry) require UI authentication (basic auth, or a proxy that presents the shared secret) and a same-origin request. In proxy mode the shared secret is compared in constant time against every line of its file, the file must not be group- or other-readable, and the secret never reaches the API or any log. A UI retry reuses the run's stored secrets server side (they never reach the browser); it is refused once they are gone.
 - A job that prints its environment prints its secrets; the log shows them as `***` only if they appear verbatim.
 
 ## Observability

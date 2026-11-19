@@ -168,3 +168,57 @@ func TestUIPathPrefix(t *testing.T) {
 		}
 	}
 }
+
+const proxyOK = "ui:\n  auth: proxy\n  proxy:\n    secret_file: /etc/hourchd/proxy.secret\n    secret_header: X-Auth-Proxy-Secret\n    user_header: Remote-User\n"
+
+func TestUIAuth(t *testing.T) {
+	d := Default().UI
+	if d.Auth != "htpasswd" || d.Proxy != (UIProxy{}) {
+		t.Fatalf("defaults: %+v", d)
+	}
+	c, err := parseReq(proxyOK)
+	if err != nil || c.UI.Auth != "proxy" || c.UI.Proxy.UserHeader != "Remote-User" || c.UI.Proxy.SecretHeader != "X-Auth-Proxy-Secret" {
+		t.Fatalf("proxy ok: %v %+v", err, c.UI)
+	}
+	// htpasswd_file is not needed in proxy mode.
+	if _, err := parseReq(proxyOK + "  htpasswd_file: \"\"\n"); err != nil {
+		t.Fatalf("proxy without htpasswd_file: %v", err)
+	}
+	// Unknown auth value.
+	if _, err := parseReq("ui:\n  auth: ldap\n"); err == nil || !strings.Contains(err.Error(), "ui.auth") {
+		t.Fatalf("unknown auth: %v", err)
+	}
+	// htpasswd mode still needs the file, and ignores ui.proxy.
+	if _, err := parseReq("ui:\n  htpasswd_file: \"\"\n"); err == nil || !strings.Contains(err.Error(), "ui.htpasswd_file") {
+		t.Fatalf("htpasswd without file: %v", err)
+	}
+	if _, err := parseReq("ui:\n  proxy:\n    user_header: \"bad header\"\n"); err != nil {
+		t.Fatalf("proxy keys ignored under htpasswd: %v", err)
+	}
+	// Each proxy key is required.
+	for _, key := range []string{"secret_file", "secret_header", "user_header"} {
+		var y strings.Builder
+		for _, line := range strings.SplitAfter(proxyOK, "\n") {
+			if !strings.HasPrefix(strings.TrimSpace(line), key+":") {
+				y.WriteString(line)
+			}
+		}
+		if _, err := parseReq(y.String()); err == nil || !strings.Contains(err.Error(), "ui.proxy."+key) {
+			t.Errorf("missing %s: %v", key, err)
+		}
+	}
+	// Header names: valid tokens, and different.
+	for _, bad := range []string{"a b", "a:b", "a/b", "é", "a\\tb"} {
+		y := strings.Replace(proxyOK, "Remote-User", "\""+bad+"\"", 1)
+		if _, err := parseReq(y); err == nil || !strings.Contains(err.Error(), "ui.proxy.user_header") {
+			t.Errorf("user_header %q: %v", bad, err)
+		}
+	}
+	if _, err := parseReq(strings.Replace(proxyOK, "Remote-User", "x-auth-proxy-secret", 1)); err == nil || !strings.Contains(err.Error(), "differ") {
+		t.Errorf("equal headers: %v", err)
+	}
+	// ui.enabled: false skips all of it.
+	if _, err := parseReq("ui:\n  enabled: false\n  auth: bogus\n"); err != nil {
+		t.Errorf("disabled UI: %v", err)
+	}
+}
