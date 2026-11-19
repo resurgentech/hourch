@@ -47,4 +47,20 @@ are appended, never edited in; a hook refuses rewrites.
   needs each secret >= 16 characters, and is refused with any group/other bit (`mode & 0077`); `ui.path_prefix`
   segments may hold only `A-Z a-z 0-9 . _ ~ -`; an unprefixed page has no `data-base` (byte-for-byte as before);
   `check-config` prints `config ok ui=proxy` in proxy mode. Docs and example updated. Release still `daemon/v0.2.0`.
+
+## 2026-11-19 — B6 hourchd: key-request discovery
+
+- Spec first: `GET /v1/key-request` (no authentication, operationId `getKeyRequestDiscovery`, tag `key-request`) and
+  the `KeyRequestDiscovery` schema (`{"request_url": <absolute http(s) URL>}`) in `specs/openapi/hourchd.yml`
+  (spec version 0.2.0); the api client regenerated. `specs/fixtures/keyrequest/discovery.json` and
+  `discovery-none.json` hold the two exchanges; the api tests check the spec's example against them and the daemon
+  tests check hourchd's answers.
+- hourchd: optional `personal_keys.request_url` (default `""`). Set: the route answers `200 {"request_url": ...}`;
+  unset: `404` (`not_found` Error body) and nothing else changes. Must be an absolute `http`/`https` URL with a host,
+  else startup and `check-config` fail naming the key. Example config, DESIGN doc ("Key-request discovery") and
+  daemon README updated.
+- `daemon` and `flow` require `api v0.2.0`; the `go.work` replace moved with them. go.sum lines for the untagged
+  `api v0.2.0` came from a local file proxy built with `zip.CreateFromVCS` from the commit below.
+- Release (after review): `api/v0.2.0`, then `daemon/v0.3.0`, both on the second commit below; no follow-up commit.
+- Commits: "B6: hourchd key-request discovery (GET /v1/key-request)" and "B6: go.sum for api v0.2.0; log".
 - Commits: the commit "A7: align UI prefix and proxy settings with the shared contract".
