@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/resurgentech/keyclient/keylist"
 
@@ -270,8 +271,14 @@ func (a *App) Start(ctx context.Context) error {
 		if err := a.KeyList.Start(ctx); err != nil {
 			return fmt.Errorf("personal_keys: %v", err)
 		}
+		// One line, no attributes; the age in whole seconds (0s when origin is
+		// none, where keylist reports an age of zero).
 		st := a.KeyList.Status()
-		a.log.Info(fmt.Sprintf("personal_keys: list origin=%s entries=%d age=%s", st.Origin, st.Entries, st.Age))
+		age := st.Age.Round(time.Second)
+		if st.Origin == keylist.OriginNone {
+			age = 0
+		}
+		a.log.Info(fmt.Sprintf("personal_keys: list origin=%s entries=%d age=%s", st.Origin, st.Entries, age))
 	}
 	return nil
 }

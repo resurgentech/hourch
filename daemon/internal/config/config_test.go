@@ -284,6 +284,21 @@ func TestPersonalKeysKeyListDefaultsAndValues(t *testing.T) {
 	}
 }
 
+// TestPersonalKeysDurationNeedsUnit: like every hourchd duration, a bare
+// number is refused when decoding; "0s" turns refresh on miss off.
+func TestPersonalKeysDurationNeedsUnit(t *testing.T) {
+	for _, y := range []string{"  refresh_on_miss: 0\n", "  refresh: 60\n"} {
+		_, err := parseReq(pkOK + y)
+		if err == nil || !strings.Contains(err.Error(), "must be a string with a unit, like 30s or 90d") {
+			t.Errorf("%q: err = %v, want the unit error", y, err)
+		}
+	}
+	c, err := parseReq(pkOK + "  refresh_on_miss: 0s\n")
+	if err != nil || c.PersonalKeys.RefreshOnMiss != 0 {
+		t.Fatalf("0s: %v %+v", err, c.PersonalKeys)
+	}
+}
+
 // SR-2: the exact messages.
 func TestPersonalKeysKeyListErrors(t *testing.T) {
 	const wantURL = `want an absolute http(s)://host/... URL (or "" to turn the key list off)`

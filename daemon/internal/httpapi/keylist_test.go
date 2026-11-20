@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -460,16 +461,26 @@ func (s *syncBuf) Write(p []byte) (int, error) { s.mu.Lock(); defer s.mu.Unlock(
 func (s *syncBuf) String() string              { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
 
 func startLines(t *testing.T, withList bool) []string {
+	return startLinesWith(t, withList, nil)
+}
+
+// startLinesWith is startLines with a hook that runs before Build, given the
+// list and the cache path (for example to write an aged cache and hold pulls).
+func startLinesWith(t *testing.T, withList bool, prep func(list *keyclienttest.List, cache string)) []string {
 	t.Helper()
 	list := keyclienttest.NewList(t)
 	list.Add(keyName, "submitter", keyTok)
+	cache := filepath.Join(t.TempDir(), "c.json")
 	e := newEnv(t, func(c *config.Config) {
 		if withList {
 			c.PersonalKeys.URL = list.URL()
-			c.PersonalKeys.CacheFile = filepath.Join(t.TempDir(), "c.json")
+			c.PersonalKeys.CacheFile = cache
 			c.PersonalKeys.Refresh = config.Duration(time.Hour)
 		}
 	})
+	if prep != nil {
+		prep(list, cache)
+	}
 	e.close()
 	buf := &syncBuf{}
 	a, err := app.Build(e.cfg, app.Deps{Clock: e.clk, Objects: e.obj, Log: slog.New(slog.NewTextHandler(buf, nil))})
@@ -500,5 +511,37 @@ func TestStartLogsOneLine(t *testing.T) {
 	}
 	if lines := startLines(t, false); len(lines) != 0 {
 		t.Fatalf("without url: %q", lines)
+	}
+}
+
+// TestStartLogLineAge: the start line's age is whole seconds, and exactly 0s
+// when nothing is loaded (origin none).
+func TestStartLogLineAge(t *testing.T) {
+	// Origin none: no cache, and the first pull is held so it cannot land.
+	lines := startLinesWith(t, true, func(list *keyclienttest.List, _ string) { list.Block() })
+	if len(lines) != 1 || !strings.Contains(lines[0], `msg="personal_keys: list origin=none entries=0 age=0s"`) {
+		t.Fatalf("origin none: %q", lines)
+	}
+
+	// Origin cache: a cache written 90.5 s ago is reported as 1m30s or 1m31s,
+	// never with a fraction.
+	lines = startLinesWith(t, true, func(list *keyclienttest.List, cache string) {
+		src, err := keylist.New(keylist.Options{URL: list.URL(), CacheFile: cache,
+			Accept: func(keylist.Entry) (bool, string) { return true, "" }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := src.Pull(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().Add(-90*time.Second - 500*time.Millisecond)
+		if err := os.Chtimes(cache, old, old); err != nil {
+			t.Fatal(err)
+		}
+		list.Block()
+	})
+	re := regexp.MustCompile(`msg="personal_keys: list origin=cache entries=1 age=1m3[01]s"$`)
+	if len(lines) != 1 || !re.MatchString(lines[0]) {
+		t.Fatalf("origin cache: %q, want a match for %s", lines, re)
 	}
 }

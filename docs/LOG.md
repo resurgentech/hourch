@@ -99,3 +99,12 @@ are appended, never edited in; a hook refuses rewrites.
 - Release (after review): `api/v0.3.0`, then `daemon/v0.4.0`, both on the commit that carries this entry.
 - Commits: "B7: PersonalKeysStatus on /v1/stats (spec, api)", "B7: hourchd key list source (personal_keys.url)"
   and "B7: log".
+
+## 2026-11-19 — B7 alignment: start log age in whole seconds; durations with a unit
+
+- The start line `personal_keys: list origin=<origin> entries=<n> age=<age>` gives the age rounded to whole
+  seconds, `0s` when origin is `none`. hourchd already refuses a bare number as a duration (`refresh_on_miss: 0`
+  is a decode error; `0s` turns refresh on miss off), now pinned by a test; the example config, README and DESIGN
+  doc write durations with a unit. `api` unchanged.
+- Release: `api/v0.3.0` stays as planned (api unchanged); `daemon/v0.4.0` moves to this commit.
+- Commits: the commit "B7: start log age in whole seconds; durations with a unit".
