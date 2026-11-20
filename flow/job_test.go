@@ -179,6 +179,7 @@ func TestNewClientFromEnv(t *testing.T) {
 
 	t.Setenv(EnvHourchdURL, f.srv.URL)
 	t.Setenv(EnvHourchdToken, testToken)
+	t.Setenv(EnvHourchdKeyRequestURL, "") // the fake has no provider: a missing token stays an error
 	c, err := NewClientFromEnv()
 	if err != nil {
 		t.Fatal(err)

@@ -146,6 +146,46 @@ Submitters and operators (`NewClientFromEnv`):
 | `HOURCHD_URL` | hourchd base URL, e.g. `https://hourchd.example.com`. No built-in default: when unset, the one-line file `$XDG_CONFIG_HOME/hourchd/url` or `~/.config/hourchd/url` (`DefaultURLFile()`, beside the token file; whitespace trimmed) is read. With neither, `NewClientFromEnv` fails naming both |
 | `HOURCHD_TOKEN` | Submitter/operator token (wins over the file) |
 | `HOURCHD_TOKEN_FILE` | File with the token; default `$XDG_CONFIG_HOME/hourchd/token` or `~/.config/hourchd/token` |
+| `HOURCHD_KEY_REQUEST_URL` | Where to file a key request when there is no token (below). When unset, hourchd is asked (`GET /v1/key-request`) |
+
+### Requesting a key on first use
+
+With neither `HOURCHD_TOKEN` nor a token in the token file (missing or empty),
+`NewClientFromEnv` asks a key provider for a personal key, using
+[`keyclient`](https://github.com/resurgentech/keyclient) (package `request`;
+standard library only). The request goes to `HOURCHD_KEY_REQUEST_URL`, else to
+the URL hourchd advertises. When neither gives one, the error is the usual
+"no token" error. The request asks for the role `submitter`, names the tool
+`hourchflow/<module version>`, and suggests the name `$USER@<short host>`.
+A person approves it in a browser; the key is then written to the token file
+(mode 0600) and used from then on.
+
+- **Standard error is a terminal:** the notice (where to approve, and the code
+  to check) is printed there on one line, `NewClientFromEnv` waits for the
+  decision, and returns the client.
+- **It is not:** `NewClientFromEnv` returns at once an error that wraps the
+  `*request.ErrPending` (`errors.As` works), whose text is the notice, then
+  `key request pending; run this again after approving`. Print it and exit;
+  the request stays pending, and the next run collects the key once it is
+  approved (and shows the notice again while it is not).
+- **Other outcomes**, each an error that wraps keyclient's (`errors.Is` works):
+
+  | Outcome | Error text |
+  |---|---|
+  | `request.ErrBusy` | `another process is handling the key request for <token file>; try again shortly` |
+  | `request.ErrDenied` | `key request denied` |
+  | `request.ErrExpired`, `request.ErrConsumed` | keyclient's message, then `run this again to file a new request` |
+  | `request.ErrUnauthorized`, `*request.ProviderError` | keyclient's message; with a `Retry-After`, then `try again in <n>s` |
+
+  "Then" is a new line. Anything else keyclient returns (discovery failing,
+  a plain-`http` URL to a host that is not loopback, an unusable pending file)
+  is returned unchanged.
+
+`NewClientFromEnv` never exits the process and never opens the approval
+address. A provider's service lists a new key at its next pull, so a client
+built right after it received a key retries its first call once, 5 s after a
+`401`; a body that cannot be replayed (a streamed context upload) is not
+retried. With a token, nothing of this happens.
 
 TLS uses the system trust store; if hourchd's certificate comes from a
 private CA, install that CA there. The HTTP client has no overall timeout;
