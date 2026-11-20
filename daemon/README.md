@@ -98,6 +98,14 @@ written and without authentication, at `GET /v1/key-request` as
 changes. When it is set `check-config` appends ` key_request=on` (after
 ` ui=proxy`). See the DESIGN doc, "Key-request discovery".
 
+`personal_keys.url` (default `""`, which turns it off) is the key list: a URL
+that serves the hashes of the personal keys to accept as submitter tokens.
+`cache_file` is required with it and has no default; `token_file`, `refresh`
+(`1m`), `refresh_on_miss` (`5s`) and `allow_insecure_http` (`false`) are
+optional, and setting any of them while `url` is empty is an error.
+`check-config` appends ` key_list=on` (and ` key_list_insecure_http=on`);
+`GET /v1/stats` gains `personal_keys`. See the DESIGN doc, "Key list".
+
 ## Web UI
 
 `https://hourchd.example.com/` redirects to `/ui/runs` (or to

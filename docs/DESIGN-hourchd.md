@@ -403,7 +403,7 @@ A job sees: the context unpacked in `work_dir/<job_id>-<attempt>`, its inputs un
 | `POST /v1/counters/{name}/next` | Atomic increment; returns the new value. Job token or submitter token |
 | `PUT /v1/builds/{type}/{flavour}/{num}`, `GET /v1/builds?type=&flavour=` | Store and list build records. PUT needs the job token |
 | `GET /v1/events` | SSE for the UI and `Wait`: run, job, worker changes, with `Last-Event-ID` resume |
-| `GET /v1/healthz`, `GET /v1/stats` | Liveness (object store and powerwarden state); ready/leased counts, oldest ready age, dispatch latency p50/p99, `unschedulable_ready`, `runs_holding_secrets` (what a restart would lose) |
+| `GET /v1/healthz`, `GET /v1/stats` | Liveness (object store and powerwarden state); ready/leased counts, oldest ready age, dispatch latency p50/p99, `unschedulable_ready`, `runs_holding_secrets` (what a restart would lose), and `personal_keys` (the key list's origin, entries and age) when `personal_keys.url` is set |
 | `GET /v1/key-request` | Key-request discovery (no authentication): `200 {"request_url": ...}` when `personal_keys.request_url` is set, else `404` |
 
 Every route outside `/v1/worker/` takes a submitter token (`Authorization: Bearer`), except the counter and build routes, which also take the job token, and `GET /v1/healthz` and `GET /v1/key-request`, which take none.
@@ -416,6 +416,18 @@ hourchd can tell a tool that has no token where to ask for one. Keys are issued 
 - **Route.** `GET /v1/key-request`, beside `GET /v1/healthz`, needs no authentication (a token, if sent, is ignored). With the setting it answers `200` with `{"request_url": "<the setting>"}`; without it, `404` with the usual `Error` body (`not_found`), which a client must not rely on. With the setting absent nothing else changes.
 - **Client side.** A tool that already has a token never asks. A tool may be given a request URL directly (a flag or an environment variable), which replaces discovery. Discovery that fails any other way (a network error, a status other than `200` and `404`, a `request_url` that is not an absolute `http` or `https` URL) is an error the tool reports; it files nothing. With no request URL from either source, a missing token is the same error as before.
 - **Contract.** The route and the `KeyRequestDiscovery` schema are in `specs/openapi/hourchd.yml`; the two exchanges are `specs/fixtures/keyrequest/discovery.json` and `discovery-none.json`. Filing, polling and approval are between the tool and the provider; hourchd takes no part in them.
+
+### Key list
+
+hourchd can also accept the personal keys of a key provider: it pulls a list of SHA-256 hashes of the keys to accept and checks a presented bearer token against it. The key list is optional and off by default; with `personal_keys.url` unset nothing changes. The wire contract (pull, `ETag`/`If-None-Match`, cache, refresh on miss) is the key provider contract at https://github.com/resurgentech/keyclient/blob/main/docs/CONTRACT.md, and its states are in `docs/STATES.md` of the same repository; this section covers only what is specific to hourchd.
+
+- **Settings**, all under `personal_keys`. `url` (default `""`): the list URL; `""` turns the key list off. `token_file` (default `""`): the pull token, optional. `cache_file` (no default): where the last good list is kept; required when `url` is set. `refresh` (default `1m`): the time between pulls, greater than zero. `refresh_on_miss` (default `5s`): the least time between pulls that an unknown key starts; `0` turns refresh on miss off. `allow_insecure_http` (default `false`): lets `url` be plain `http` to a host that is not loopback (`localhost`, `127.0.0.0/8`, `::1`); it applies only to `url`, never to `request_url`, which is advertised and not fetched.
+- **Validation.** A key counts as set when it is written in the file, whatever its value. A sub-key set while `url` is `""` fails with `personal_keys.<key> is set but personal_keys.url is empty`. A malformed `url` (not absolute `http(s)`, with user info, with a fragment) fails with `personal_keys.url "<redacted url>": want an absolute http(s)://host/... URL (or "" to turn the key list off)`. A missing cache file fails with `personal_keys.cache_file: required when personal_keys.url is set`; a bad duration with `personal_keys.refresh: must be greater than zero` or `personal_keys.refresh_on_miss: must not be negative`. Anything the key client refuses (a plain-http `url` without `allow_insecure_http`, an unreadable `token_file`) fails with `personal_keys: <its error>`, followed for the http rule by `; set personal_keys.allow_insecure_http: true only for a network path you trust`. hourchd reports the first error.
+- **Roles.** Only the role `submitter` is accepted, and it maps to the submitter kind. An entry with another role is skipped. An entry whose name or SHA-256 matches any token of `tokens_file` (workers included) is skipped: the local token keeps its own role. The check is fixed at start. If this daemon ever reloads its tokens while running, it must build a new `Source`.
+- **Bearer order.** (1) `tokens_file`. (2) A token with the `hjt_` prefix is a job token and is only ever looked up as one; it never reaches the list. (3) Otherwise, on a miss and only on a route a submitter may call, the key list (`LookupOrRefresh`, which may start one throttled pull); a hit is a submitter named after the entry. Every other case is `401`. The worker routes (`/v1/worker/...`) and `PUT /v1/builds/...` never consult the list, so a pulled key is never a worker or a job and an unknown token there never starts a pull. An empty bearer is never looked up.
+- **Lifecycle.** The source is built after the config and tokens are loaded; a refusal stops the start before any state is opened. It is started, with the server's context, before the listener accepts requests: the cache is loaded first, so a usable cache serves before the first pull, and the daemon starts even when the provider is down. One log line follows, `personal_keys: list origin=<none|cache|provider> entries=<n> age=<duration>`; the key client logs pull failures and recoveries itself.
+- **Health.** `GET /v1/healthz` is unchanged. `GET /v1/stats` gains the optional object `personal_keys` when `url` is set: `origin`, `entries`, `cache_failing`, `age_seconds` and `list_time` (absent when origin is `none`), `last_success` (absent until a good pull) and `last_error` (present while the latest pull failed; printable characters only, at most 200). It holds no key, hash, pull token or URL.
+- **`check-config`** builds the source with the options `serve` uses, without starting it, so it sends nothing, and fails with the messages above. On success it adds ` key_list=on` after ` key_request=on` when `url` is set, and ` key_list_insecure_http=on` when `allow_insecure_http` is true and `url` is plain `http`. It never prints a token or a hash.
 
 ### Secrets
 
@@ -475,7 +487,7 @@ powerwarden is a separate service that powers hosts on and off according to dema
 
 `/etc/hourchd/config.yaml` for the daemon and `/etc/hourch/worker.yaml` for workers, paths overridable with `--config`. `daemon/config.yaml.example` and `worker/worker.yaml.example` hold every key with its default (the per-host worker identity keys show illustrative values). Unknown keys are a startup error. `hourchd check-config --config FILE` validates the config, the tokens file, the powerwarden token (when enabled) and, when the UI is enabled, the htpasswd file (`ui.auth: htpasswd`) or the proxy secret file and its permissions (`ui.auth: proxy`).
 
-Required, with no default: `minio.endpoint` (daemon); `hourchd_url` and `worker_id` (worker). `powerwarden.url` defaults to `""`, which disables the publisher. `personal_keys.request_url` defaults to `""`, which makes `GET /v1/key-request` answer `404`.
+Required, with no default: `minio.endpoint` (daemon); `hourchd_url` and `worker_id` (worker). `powerwarden.url` defaults to `""`, which disables the publisher. `personal_keys.request_url` defaults to `""`, which makes `GET /v1/key-request` answer `404`. `personal_keys.url` defaults to `""`, which turns the key list off; `personal_keys.cache_file` has no default and is required when `url` is set (see Key list).
 
 ```yaml
 # hourchd (abridged; see daemon/config.yaml.example)
@@ -514,6 +526,12 @@ ui:     {enabled: true, auth: htpasswd, htpasswd_file: /etc/hourchd/ui.htpasswd,
 #   {secret_file: "", secret_header: "", user_header: ""}
 personal_keys:
   request_url: ""                            # advertised at GET /v1/key-request; "" answers 404
+  url: ""                                    # the key list; "" turns it off. With it set, also (see Key list):
+  # token_file: ""                           #   optional pull token
+  # cache_file: /var/lib/hourchd/personal-keys.json   # required with url, no default
+  # refresh: 1m                              #   must be > 0
+  # refresh_on_miss: 5s                      #   0 turns refresh on miss off
+  # allow_insecure_http: false               #   plain-http url to a non-loopback host
 ```
 
 ```yaml
@@ -613,7 +631,7 @@ Considered and rejected: any persisted key makes a copy of the bucket plus the k
 
 - Structured logs: assign, accept, requeue, timeout, cancel, lease lapse, reconnect, transfer start and end, with run, job, worker, attempt.
 - The `events` table is the audit trail and the UI's activity feed.
-- `GET /v1/stats`: ready, leased, connected workers by tag, oldest ready age, dispatch latency p50/p99 over the last hour, `unschedulable_ready`, `runs_holding_secrets`.
+- `GET /v1/stats`: ready, leased, connected workers by tag, oldest ready age, dispatch latency p50/p99 over the last hour, `unschedulable_ready`, `runs_holding_secrets`, and, with `personal_keys.url` set, `personal_keys` (origin, entries, age, last success and error).
 - A warning is logged the first time the reaper finds a `ready` job that no connected worker covers.
 
 ## Risks

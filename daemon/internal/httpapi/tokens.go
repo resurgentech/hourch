@@ -3,11 +3,13 @@ package httpapi
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"strings"
 
+	"github.com/resurgentech/keyclient/keylist"
 	"gopkg.in/yaml.v3"
 
 	"github.com/resurgentech/hourch/daemon/internal/graph"
@@ -112,4 +114,19 @@ func (t *Tokens) Lookup(presented string) (name, kind string, ok bool) {
 		return "", "", false
 	}
 	return t.names[match], t.kinds[match], true
+}
+
+// TakenLocally reports whether a key-list entry clashes with a token loaded
+// from tokens_file: the same name as any submitter or worker, or the same
+// SHA-256 as any token. Local tokens win. The tokens are fixed after
+// construction, so the answer never changes for a given entry (keylist
+// requires that of its Accept function).
+func (t *Tokens) TakenLocally(e keylist.Entry) bool {
+	want := strings.ToLower(e.SHA256)
+	for i := range t.names {
+		if e.Name == t.names[i] || want == hex.EncodeToString(t.hashes[i][:]) {
+			return true
+		}
+	}
+	return false
 }

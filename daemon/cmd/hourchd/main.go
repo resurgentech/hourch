@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -91,7 +92,9 @@ func checkConfig(args []string) error {
 
 // checkSummary is check-config's success line: "config ok", plus " ui=proxy"
 // when the UI trusts a reverse proxy for identity, plus " key_request=on"
-// when personal_keys.request_url is set.
+// when personal_keys.request_url is set, plus " key_list=on" when
+// personal_keys.url is set, plus " key_list_insecure_http=on" when that URL is
+// plain http and allow_insecure_http is true.
 func checkSummary(cfg config.Config) string {
 	s := "config ok"
 	if cfg.UI.Enabled && cfg.UI.Auth == "proxy" {
@@ -99,6 +102,12 @@ func checkSummary(cfg config.Config) string {
 	}
 	if cfg.PersonalKeys.RequestURL != "" {
 		s += " key_request=on"
+	}
+	if p := cfg.PersonalKeys; p.URL != "" {
+		s += " key_list=on"
+		if u, err := url.Parse(p.URL); err == nil && p.AllowInsecureHTTP && u.Scheme == "http" {
+			s += " key_list_insecure_http=on"
+		}
 	}
 	return s
 }

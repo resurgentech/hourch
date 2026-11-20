@@ -76,3 +76,18 @@ personal_keys:                               # optional: keys issued by an exter
                                              # answers 404 and nothing else changes. Absolute http(s) URL with a host,
                                              # no user info, no fragment; served exactly as written; check-config then
                                              # prints "key_request=on". e.g. https://keys.example/v1/services/hourchd/requests
+  url: ""                                    # the key list: a URL that serves the SHA-256 hashes of the personal keys to accept
+                                             # (role submitter only), pulled every `refresh` and when an unknown key is presented.
+                                             # "" (default) turns it off: nothing is pulled and nothing changes. Absolute http(s)
+                                             # URL with a host, no user info, no fragment. Tokens in tokens_file always win over
+                                             # the list. When set, cache_file is REQUIRED and the keys below may be set; while
+                                             # url is "" setting any of them is an error (so they are commented out here).
+                                             # e.g. https://keys.example/v1/lists/hourchd
+  # token_file: ""                           # the pull token (optional); e.g. /etc/hourchd/personal-keys.token
+  # cache_file: /var/lib/hourchd/personal-keys.json   # REQUIRED with url, no default: the last good list, kept so a
+                                             # restart serves keys while the provider is down
+  # refresh: 1m                              # time between pulls; must be > 0
+  # refresh_on_miss: 5s                      # least time between pulls started by an unknown key; 0 turns that off
+  # allow_insecure_http: false               # true allows a plain-http url to a host that is not loopback; the pull token and
+                                             # the list then travel in the clear, so only for a network path you trust.
+                                             # check-config prints "key_list=on" (and "key_list_insecure_http=on" with this)

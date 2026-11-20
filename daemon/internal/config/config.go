@@ -172,13 +172,77 @@ type UI struct {
 	PathPrefix string `yaml:"path_prefix"`
 }
 
-// PersonalKeys configures personal keys issued by an external key provider.
-// It holds only the request URL for now.
+// PersonalKeys configures personal keys issued by an external key provider:
+// the request URL that is advertised, and the key list that is pulled.
 type PersonalKeys struct {
 	// RequestURL is advertised at GET /v1/key-request: the absolute http(s)
 	// URL where a tool without a key files a key request. "" (default): the
 	// route answers 404.
 	RequestURL string `yaml:"request_url"`
+	// URL is the key-list URL. "" (default) turns the key list off.
+	URL string `yaml:"url"`
+	// TokenFile holds the pull token. Optional.
+	TokenFile string `yaml:"token_file"`
+	// CacheFile keeps the last good list. Required when URL is set; no default.
+	CacheFile string `yaml:"cache_file"`
+	// Refresh is the time between pulls (default 1m, greater than zero).
+	Refresh Duration `yaml:"refresh"`
+	// RefreshOnMiss is the least time between pulls started by an unknown
+	// key (default 5s); 0 turns refresh on miss off.
+	RefreshOnMiss Duration `yaml:"refresh_on_miss"`
+	// AllowInsecureHTTP allows a plain-http URL to a host that is not loopback.
+	AllowInsecureHTTP bool `yaml:"allow_insecure_http"`
+
+	// set records which of the five sub-keys were present in the file, so
+	// that one written next to an empty url is an error whatever its value.
+	set uint8
+}
+
+// The bits of PersonalKeys.set, in the order Validate reports them.
+const (
+	pkTokenFile uint8 = 1 << iota
+	pkCacheFile
+	pkRefresh
+	pkRefreshOnMiss
+	pkAllowInsecureHTTP
+)
+
+var personalKeysSubKeys = []struct {
+	name string
+	bit  uint8
+}{
+	{"token_file", pkTokenFile}, {"cache_file", pkCacheFile}, {"refresh", pkRefresh},
+	{"refresh_on_miss", pkRefreshOnMiss}, {"allow_insecure_http", pkAllowInsecureHTTP},
+}
+
+// UnmarshalYAML decodes the mapping over the values already in p (the
+// defaults), records which sub-keys are present and rejects unknown keys as
+// the strict decoder of Parse does for the rest of the file.
+func (p *PersonalKeys) UnmarshalYAML(n *yaml.Node) error {
+	type plain PersonalKeys
+	if n.Kind == yaml.MappingNode {
+		known := map[string]bool{"request_url": true, "url": true}
+		for _, k := range personalKeysSubKeys {
+			known[k.name] = true
+		}
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			k := n.Content[i]
+			if !known[k.Value] {
+				return fmt.Errorf("line %d: field %s not found in type config.PersonalKeys", k.Line, k.Value)
+			}
+			for _, sk := range personalKeysSubKeys {
+				if sk.name == k.Value {
+					p.set |= sk.bit
+				}
+			}
+		}
+	}
+	set := p.set
+	if err := n.Decode((*plain)(p)); err != nil {
+		return err
+	}
+	p.set = set
+	return nil
 }
 
 // Config is config.yaml.
@@ -236,6 +300,10 @@ func Default() Config {
 		},
 		Events: Events{RingSize: 1000, Heartbeat: sec(15)},
 		UI:     UI{Enabled: true, Auth: "htpasswd", HtpasswdFile: "/etc/hourchd/ui.htpasswd"},
+		PersonalKeys: PersonalKeys{
+			Refresh:       sec(60),
+			RefreshOnMiss: sec(5),
+		},
 	}
 }
 
@@ -375,6 +443,9 @@ func (c Config) Validate() error {
 			return fmt.Errorf("personal_keys.request_url %q: must not have a fragment", u)
 		}
 	}
+	if err := c.PersonalKeys.validate(); err != nil {
+		return err
+	}
 	if err := c.UI.validate(); err != nil {
 		return err
 	}
@@ -395,6 +466,40 @@ func (c Config) Validate() error {
 	}
 	if c.Backup.MinioPrefix != "" && !strings.HasSuffix(c.Backup.MinioPrefix, "/") {
 		return fmt.Errorf("backup.minio_prefix must end with /")
+	}
+	return nil
+}
+
+// validate checks the key-list settings (personal_keys.request_url is
+// checked by Config.Validate).
+func (p PersonalKeys) validate() error {
+	if p.URL == "" {
+		for _, k := range personalKeysSubKeys {
+			if p.set&k.bit != 0 {
+				return fmt.Errorf("personal_keys.%s is set but personal_keys.url is empty", k.name)
+			}
+		}
+		return nil
+	}
+	bad := func(redacted string) error {
+		return fmt.Errorf("personal_keys.url %q: want an absolute http(s)://host/... URL (or \"\" to turn the key list off)", redacted)
+	}
+	u, err := url.Parse(p.URL)
+	if err != nil {
+		// What does not parse cannot be redacted, so it is not echoed.
+		return bad("xxxxx")
+	}
+	if !u.IsAbs() || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || strings.Contains(p.URL, "#") {
+		return bad(u.Redacted())
+	}
+	if p.CacheFile == "" {
+		return errors.New("personal_keys.cache_file: required when personal_keys.url is set")
+	}
+	if p.Refresh <= 0 {
+		return errors.New("personal_keys.refresh: must be greater than zero")
+	}
+	if p.RefreshOnMiss < 0 {
+		return errors.New("personal_keys.refresh_on_miss: must not be negative")
 	}
 	return nil
 }

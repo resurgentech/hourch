@@ -5,12 +5,17 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/resurgentech/keyclient/keylist"
 
 	"github.com/resurgentech/hourch/daemon/internal/clock"
 	"github.com/resurgentech/hourch/daemon/internal/config"
@@ -46,6 +51,7 @@ type App struct {
 	Maint     *maint.Maint
 	Objects   objects.Store
 	Publisher *pwpub.Publisher // nil when powerwarden.url is empty
+	KeyList   *keylist.Source  // nil when personal_keys.url is empty
 
 	handler http.Handler
 	loops   sync.WaitGroup
@@ -56,7 +62,13 @@ type App struct {
 // config (already parsed), the tokens file, the powerwarden token and the
 // UI credentials (the htpasswd file, or the proxy secret file and its mode). (The run-secrets key has no file: Build generates it.)
 func Check(cfg config.Config) error {
-	if _, err := httpapi.LoadTokens(cfg.TokensFile); err != nil {
+	tokens, err := httpapi.LoadTokens(cfg.TokensFile)
+	if err != nil {
+		return err
+	}
+	// Builds the key list exactly as serve does, but never starts it: nothing
+	// is sent.
+	if _, err := newKeyList(cfg, tokens, slog.Default()); err != nil {
 		return err
 	}
 	if cfg.Powerwarden.URL != "" {
@@ -68,6 +80,42 @@ func Check(cfg config.Config) error {
 		return err
 	}
 	return nil
+}
+
+// newKeyList builds the key list from personal_keys (nil when url is empty)
+// without starting it. Both Check and Build use it, so check-config refuses
+// what serve refuses. The Accept function takes only role submitter and skips
+// every entry that clashes with a token of tokens_file.
+func newKeyList(cfg config.Config, tokens *httpapi.Tokens, log *slog.Logger) (*keylist.Source, error) {
+	p := cfg.PersonalKeys
+	if p.URL == "" {
+		return nil, nil
+	}
+	src, err := keylist.New(keylist.Options{
+		URL: p.URL, TokenFile: p.TokenFile, CacheFile: p.CacheFile,
+		Refresh: p.Refresh.D(), RefreshOnMiss: p.RefreshOnMiss.D(),
+		AllowInsecureHTTP: p.AllowInsecureHTTP,
+		Accept:            keylist.AcceptRoles([]string{httpapi.KindSubmitter}, tokens.TakenLocally),
+		Logger:            log,
+	})
+	if err != nil {
+		msg := fmt.Sprintf("personal_keys: %v", err)
+		if u, perr := url.Parse(p.URL); perr == nil && u.Scheme == "http" && !p.AllowInsecureHTTP && !isLoopbackHost(u.Hostname()) {
+			msg += "; set personal_keys.allow_insecure_http: true only for a network path you trust"
+		}
+		return nil, errors.New(msg)
+	}
+	return src, nil
+}
+
+// isLoopbackHost is keyclient's rule for plain http: "localhost" by name, an
+// address in 127.0.0.0/8, or ::1.
+func isLoopbackHost(h string) bool {
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }
 
 // loadUIAuth loads what the configured UI auth mode needs: the htpasswd
@@ -94,6 +142,11 @@ func Build(cfg config.Config, d Deps) (*App, error) {
 		d.Log = slog.Default()
 	}
 	tokens, err := httpapi.LoadTokens(cfg.TokensFile)
+	if err != nil {
+		return nil, err
+	}
+	// A refusal of the key list stops the start before any state is touched.
+	kl, err := newKeyList(cfg, tokens, d.Log)
 	if err != nil {
 		return nil, err
 	}
@@ -177,6 +230,7 @@ func Build(cfg config.Config, d Deps) (*App, error) {
 		WorkerRetention: cfg.Retention.Rows.D(),
 		Powerwarden:     func() string { s, _ := pwState(); return s },
 		KeyRequestURL:   cfg.PersonalKeys.RequestURL,
+		KeyList:         kl,
 	})
 	if err != nil {
 		return fail(err)
@@ -196,7 +250,7 @@ func Build(cfg config.Config, d Deps) (*App, error) {
 		Rows: cfg.Retention.Rows.D(), Logs: cfg.Retention.Logs.D(), Artifacts: cfg.Retention.Artifacts.D(),
 		PruneInterval: cfg.Retention.PruneInterval.D(), BackupEvery: cfg.Backup.Interval.D(), BackupPrefix: cfg.Backup.MinioPrefix,
 	})
-	return &App{Config: cfg, Store: st, Engine: eng, API: srv, Maint: m, Objects: d.Objects, Publisher: pub,
+	return &App{Config: cfg, Store: st, Engine: eng, API: srv, Maint: m, Objects: d.Objects, Publisher: pub, KeyList: kl,
 		handler: mux, log: d.Log}, nil
 }
 
@@ -212,6 +266,13 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	a.Maint.Start(ctx)
 	a.StartPublisher(ctx)
+	if a.KeyList != nil {
+		if err := a.KeyList.Start(ctx); err != nil {
+			return fmt.Errorf("personal_keys: %v", err)
+		}
+		st := a.KeyList.Status()
+		a.log.Info(fmt.Sprintf("personal_keys: list origin=%s entries=%d age=%s", st.Origin, st.Entries, st.Age))
+	}
 	return nil
 }
 

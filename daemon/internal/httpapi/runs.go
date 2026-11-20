@@ -11,6 +11,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+
+	"github.com/resurgentech/keyclient/keylist"
 
 	api "github.com/resurgentech/hourch/api"
 
@@ -433,7 +436,47 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request, _ caller) {
 	if p50, p99, ok := s.eng.Latency(); ok {
 		out.DispatchLatencyMs = &api.LatencyMs{P50: float32(p50), P99: float32(p99)}
 	}
+	if s.o.KeyList != nil {
+		out.PersonalKeys = personalKeysStatus(s.o.KeyList.Status())
+	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// personalKeysStatus is the stats object for the key list. It holds no hash,
+// token or URL: only counts, times and a safe error text.
+func personalKeysStatus(st keylist.Status) *api.PersonalKeysStatus {
+	out := &api.PersonalKeysStatus{
+		Origin: api.PersonalKeysStatusOrigin(st.Origin), Entries: st.Entries, CacheFailing: st.CacheFailing,
+	}
+	if st.Origin != keylist.OriginNone {
+		age := int(st.Age / time.Second)
+		lt := st.ListTime.UTC()
+		out.AgeSeconds, out.ListTime = &age, &lt
+	}
+	if !st.LastSuccess.IsZero() {
+		ls := st.LastSuccess.UTC()
+		out.LastSuccess = &ls
+	}
+	if st.LastError != nil {
+		e := safeError(st.LastError)
+		out.LastError = &e
+	}
+	return out
+}
+
+// safeError makes an error text fit for a stats field: every rune that is
+// not printable becomes "?", and at most 200 runes are kept.
+func safeError(err error) string {
+	rs := []rune(err.Error())
+	if len(rs) > 200 {
+		rs = rs[:200]
+	}
+	for i, r := range rs {
+		if !unicode.IsPrint(r) {
+			rs[i] = '?'
+		}
+	}
+	return string(rs)
 }
 
 func (s *Server) connectWorker(w http.ResponseWriter, r *http.Request, c caller) {

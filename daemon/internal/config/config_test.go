@@ -233,8 +233,9 @@ func TestUIAuth(t *testing.T) {
 // when set it must be an absolute http or https URL, as the key-request
 // contract requires of what discovery returns.
 func TestPersonalKeysRequestURL(t *testing.T) {
-	if got := Default().PersonalKeys; got != (PersonalKeys{}) {
-		t.Fatalf("default personal_keys = %+v", got)
+	want := PersonalKeys{Refresh: Duration(time.Minute), RefreshOnMiss: Duration(5 * time.Second)}
+	if got := Default().PersonalKeys; got != want {
+		t.Fatalf("default personal_keys = %+v, want %+v", got, want)
 	}
 	for _, u := range []string{"", "https://provider.example/v1/services/example/requests", "http://10.0.0.1:8080/r", "HTTPS://provider.example/r", "Http://provider.example/r?x=1"} {
 		c, err := parseReq("personal_keys:\n  request_url: \"" + u + "\"\n")
@@ -255,7 +256,103 @@ func TestPersonalKeysRequestURL(t *testing.T) {
 			t.Errorf("request_url %q: error %v must exist and not contain the password", u, err)
 		}
 	}
-	if _, err := parseReq("personal_keys:\n  url: https://provider.example/list\n"); err == nil {
-		t.Error("personal_keys.url is not a key yet: want an unknown-key error")
+}
+
+const pkOK = "personal_keys:\n  url: https://keys.example/v1/lists/hourchd\n  cache_file: /var/lib/hourchd/personal-keys.json\n"
+
+func TestPersonalKeysKeyListDefaultsAndValues(t *testing.T) {
+	c, err := parseReq(pkOK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := c.PersonalKeys
+	if p.URL != "https://keys.example/v1/lists/hourchd" || p.CacheFile != "/var/lib/hourchd/personal-keys.json" ||
+		p.TokenFile != "" || p.Refresh.D() != time.Minute || p.RefreshOnMiss.D() != 5*time.Second || p.AllowInsecureHTTP {
+		t.Fatalf("defaults: %+v", p)
+	}
+	c, err = parseReq(pkOK + "  token_file: /etc/t\n  refresh: 30s\n  refresh_on_miss: 0s\n  allow_insecure_http: true\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p = c.PersonalKeys
+	if p.TokenFile != "/etc/t" || p.Refresh.D() != 30*time.Second || p.RefreshOnMiss != 0 || !p.AllowInsecureHTTP {
+		t.Fatalf("values: %+v", p)
+	}
+	// request_url and the key list are independent.
+	if c, err = parseReq(pkOK + "  request_url: https://keys.example/r\n"); err != nil || c.PersonalKeys.RequestURL == "" {
+		t.Fatalf("both: %v", err)
+	}
+}
+
+// SR-2: the exact messages.
+func TestPersonalKeysKeyListErrors(t *testing.T) {
+	const wantURL = `want an absolute http(s)://host/... URL (or "" to turn the key list off)`
+	cases := []struct{ name, y, want string }{
+		{"relative", "url: keys.example/x\ncache_file: /c\n", `personal_keys.url "keys.example/x": ` + wantURL},
+		{"scheme", "url: ftp://keys.example/x\ncache_file: /c\n", `personal_keys.url "ftp://keys.example/x": ` + wantURL},
+		{"no host", "url: https:///x\ncache_file: /c\n", `personal_keys.url "https:///x": ` + wantURL},
+		{"userinfo redacted", "url: https://bob:s3cretpw@keys.example/x\ncache_file: /c\n", `personal_keys.url "https://bob:xxxxx@keys.example/x": ` + wantURL},
+		{"fragment", "url: https://keys.example/x#f\ncache_file: /c\n", `personal_keys.url "https://keys.example/x#f": ` + wantURL},
+		{"unparsable", "url: \"http://[::1\"\ncache_file: /c\n", `personal_keys.url "xxxxx": ` + wantURL},
+		{"no cache", "url: https://keys.example/x\n", "personal_keys.cache_file: required when personal_keys.url is set"},
+		{"refresh zero", "url: https://keys.example/x\ncache_file: /c\nrefresh: 0s\n", "personal_keys.refresh: must be greater than zero"},
+		{"refresh negative", "url: https://keys.example/x\ncache_file: /c\nrefresh: -1s\n", "personal_keys.refresh: must be greater than zero"},
+		{"miss negative", "url: https://keys.example/x\ncache_file: /c\nrefresh_on_miss: -1s\n", "personal_keys.refresh_on_miss: must not be negative"},
+	}
+	for _, c := range cases {
+		y := "personal_keys:\n  " + strings.ReplaceAll(strings.TrimSuffix(c.y, "\n"), "\n", "\n  ") + "\n"
+		_, err := parseReq(y)
+		if err == nil || err.Error() != c.want {
+			t.Errorf("%s: got %v, want %q", c.name, err, c.want)
+		}
+		if err != nil && strings.Contains(err.Error(), "s3cretpw") {
+			t.Errorf("%s: password echoed: %v", c.name, err)
+		}
+	}
+}
+
+// "Set" means present in the file, whatever the value, with url empty.
+func TestPersonalKeysSubKeyWithoutURL(t *testing.T) {
+	for _, kv := range []string{"token_file: \"\"", "token_file: /t", "cache_file: /c", "refresh: 1m", "refresh_on_miss: 5s", "refresh_on_miss: 0s", "allow_insecure_http: false", "allow_insecure_http: true"} {
+		key := kv[:strings.Index(kv, ":")]
+		for _, urlLine := range []string{"", "  url: \"\"\n"} {
+			_, err := parseReq("personal_keys:\n" + urlLine + "  " + kv + "\n")
+			want := "personal_keys." + key + " is set but personal_keys.url is empty"
+			if err == nil || err.Error() != want {
+				t.Errorf("%q (url line %q): got %v, want %q", kv, urlLine, err, want)
+			}
+		}
+	}
+	// The first present key wins, in the documented order.
+	_, err := parseReq("personal_keys:\n  allow_insecure_http: true\n  refresh: 1m\n  token_file: /t\n")
+	if err == nil || err.Error() != "personal_keys.token_file is set but personal_keys.url is empty" {
+		t.Errorf("order: %v", err)
+	}
+	// A sub-key of another block of the file does not count, nor does request_url.
+	if _, err := parseReq("personal_keys:\n  request_url: https://keys.example/r\n"); err != nil {
+		t.Errorf("request_url only: %v", err)
+	}
+	if _, err := parseReq("personal_keys:\n  url: \"\"\n"); err != nil {
+		t.Errorf("url empty only: %v", err)
+	}
+}
+
+func TestPersonalKeysUnknownSubKeyRejected(t *testing.T) {
+	for _, y := range []string{"personal_keys:\n  bogus: 1\n", pkOK + "  cache_fil: /x\n"} {
+		if _, err := parseReq(y); err == nil || !strings.Contains(err.Error(), "not found in type config.PersonalKeys") {
+			t.Errorf("%q: want an unknown-key error, got %v", y, err)
+		}
+	}
+}
+
+// Load adds the path in front of the message; the message text stays intact.
+func TestPersonalKeysLoadWrapsWithPath(t *testing.T) {
+	f := t.TempDir() + "/config.yaml"
+	if err := os.WriteFile(f, []byte("minio:\n  endpoint: m:9000\npersonal_keys:\n  url: https://keys.example/x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(f)
+	if err == nil || err.Error() != f+": personal_keys.cache_file: required when personal_keys.url is set" {
+		t.Fatalf("Load: %v", err)
 	}
 }

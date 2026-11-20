@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/resurgentech/keyclient/keylist"
+
 	api "github.com/resurgentech/hourch/api"
 
 	"github.com/resurgentech/hourch/daemon/internal/dispatch"
@@ -42,6 +44,9 @@ type Options struct {
 	// KeyRequestURL (personal_keys.request_url) is advertised at
 	// GET /v1/key-request; "" answers 404.
 	KeyRequestURL string
+	// KeyList is the pulled list of personal keys (personal_keys.url); nil
+	// means off. It is consulted only on routes a submitter may call.
+	KeyList *keylist.Source
 }
 
 // Server serves the API.
@@ -207,7 +212,8 @@ func (s *Server) authenticate(r *http.Request, kinds []string) (caller, int) {
 	var c caller
 	if name, kind, ok := s.o.Tokens.Lookup(tok); ok {
 		c = caller{kind: kind, name: name}
-	} else {
+	} else if strings.HasPrefix(tok, "hjt_") {
+		// Job tokens never reach the key list.
 		j, err := s.eng.JobForToken(tok)
 		if errors.Is(err, dispatch.ErrNotFound) {
 			return caller{}, http.StatusUnauthorized
@@ -217,6 +223,16 @@ func (s *Server) authenticate(r *http.Request, kinds []string) (caller, int) {
 			return caller{}, http.StatusInternalServerError
 		}
 		c = caller{kind: KindJob, name: "job:" + j.ID, job: j}
+	} else if s.o.KeyList != nil && slices.Contains(kinds, KindSubmitter) {
+		// Only routes a submitter may call consult the list; a pulled key is
+		// never a worker or a job.
+		name, role, ok := s.o.KeyList.LookupOrRefresh(r.Context(), tok)
+		if !ok || role != KindSubmitter {
+			return caller{}, http.StatusUnauthorized
+		}
+		c = caller{kind: KindSubmitter, name: name}
+	} else {
+		return caller{}, http.StatusUnauthorized
 	}
 	for _, k := range kinds {
 		if k == c.kind {
