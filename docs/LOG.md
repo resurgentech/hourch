@@ -140,3 +140,18 @@ are appended, never edited in; a hook refuses rewrites.
   leaves it clean; `go.work` unchanged.
 - Release (after review): `flow/v0.2.0`, on the commit that carries this entry.
 - Commits: "B10: flow requests a key on first use" and "B10: log".
+
+## 2026-11-20 — B10 follow-up: preflight for a fresh key; name hint without $USER
+
+- The usual first call of a run is the streamed context upload, which cannot be replayed, so the retry wrapped
+  around the caller's first call could not cover it. The doer wrapper is removed. When `NewClientFromEnv` has just
+  received a key (`Result.Name != ""`) it sends one `GET /v1/stats` (submitter route, read-only, small reply; a
+  pulled key's miss triggers hourchd's refresh there) before returning the client, and once more 5 s later if
+  that gets `401`. Bounded to 20 s in all, outcome ignored, the client returned either way; the caller's calls are
+  never retried. With a token already present nothing extra is sent (pinned by a request-counting test).
+- The key request's name hint is the short host alone when `$USER` is empty (keyclient requires one).
+- Tests: `TestFreshKeyStreamedUploadFirstSucceeds` (upload as the first call, daemon accepting the key only after
+  one refusal), the preflight's once / only-on-401 / bounded / caller's-client rules, `TestNameHintWithoutUser`.
+  README updated. `go.mod` unchanged.
+- Release (after review): `flow/v0.2.0` moves to the commit that carries this entry.
+- Commits: "B10: preflight GET /v1/stats for a fresh key; name hint without $USER" and "B10: log the follow-up".
