@@ -156,7 +156,8 @@ With neither `HOURCHD_TOKEN` nor a token in the token file (missing or empty),
 standard library only). The request goes to `HOURCHD_KEY_REQUEST_URL`, else to
 the URL hourchd advertises. When neither gives one, the error is the usual
 "no token" error. The request asks for the role `submitter`, names the tool
-`hourchflow/<module version>`, and suggests the name `$USER@<short host>`.
+`hourchflow/<module version>`, and suggests the name `$USER@<short host>` (the
+short host alone when `$USER` is empty).
 A person approves it in a browser; the key is then written to the token file
 (mode 0600) and used from then on.
 
@@ -182,10 +183,14 @@ A person approves it in a browser; the key is then written to the token file
   is returned unchanged.
 
 `NewClientFromEnv` never exits the process and never opens the approval
-address. A provider's service lists a new key at its next pull, so a client
-built right after it received a key retries its first call once, 5 s after a
-`401`; a body that cannot be replayed (a streamed context upload) is not
-retried. With a token, nothing of this happens.
+address. hourchd accepts a new key once it has pulled its key list again, so
+when `NewClientFromEnv` has just received a key it sends one `GET /v1/stats`
+(authenticated, read-only, a small reply) before returning the client; if that
+is refused with `401`, it waits 5 s and sends it once more. This takes at most
+20 s, and its outcome is ignored: the client is returned either way, and the
+caller's own calls (such as the streamed context upload that usually comes
+first) are never retried. With a token already present, nothing of this
+happens and nothing extra is sent.
 
 TLS uses the system trust store; if hourchd's certificate comes from a
 private CA, install that CA there. The HTTP client has no overall timeout;

@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	hourchdapi "github.com/resurgentech/hourch/api"
@@ -122,10 +121,11 @@ func NewClient(baseURL, token string, opts ...hourchdapi.ClientOption) (*hourchd
 //
 // Denied, expired and other final outcomes are returned as errors that wrap
 // keyclient's. NewClientFromEnv never exits the process and never opens the
-// approval address. A client built right after a key was received retries
-// its first call once, 5 s after a 401, as a service that has not yet pulled
-// the new key refuses it; a request body that cannot be replayed (a streamed
-// context upload) is not retried.
+// approval address. When this call received the key, it sends one
+// GET /v1/stats before returning the client, and once more 5 s later if that
+// is refused with 401 (hourchd has not yet pulled the new key); this takes at
+// most 20 s, its outcome is ignored, and the caller's own calls are never
+// retried. With a token already present nothing extra is sent.
 func NewClientFromEnv(opts ...hourchdapi.ClientOption) (*hourchdapi.Client, error) {
 	url, err := urlFromEnvOrFile()
 	if err != nil {
@@ -178,8 +178,10 @@ var (
 	stderrIsTerminal            = func() bool { return request.IsTerminal(os.Stderr) }
 	keyRequestContext           = context.Background
 	// freshKeyRetryDelay is the wait before the one retry of a fresh key's
-	// first call: the contract's default refresh_on_miss.
+	// preflight: the contract's default refresh_on_miss.
 	freshKeyRetryDelay = 5 * time.Second
+	// preflightTimeout bounds the whole preflight, its wait included.
+	preflightTimeout = 20 * time.Second
 )
 
 // requestKey runs request.Ensure for the token file: waiting for the decision
@@ -190,7 +192,7 @@ func requestKey(serviceURL, tokenPath string) (request.Result, error) {
 		Override:   strings.TrimSpace(os.Getenv(EnvHourchdKeyRequestURL)),
 		TokenPath:  tokenPath,
 		Role:       keyRequestRole,
-		NameHint:   os.Getenv("USER") + "@" + shortHost(),
+		NameHint:   nameHint(),
 		Tool:       keyRequestTool + "/" + moduleVersion(),
 		Wait:       stderrIsTerminal(),
 	}
@@ -198,6 +200,15 @@ func requestKey(serviceURL, tokenPath string) (request.Result, error) {
 		o.Notify = func(n request.Notice) { fmt.Fprintln(keyRequestStderr, n.String()) }
 	}
 	return request.Ensure(keyRequestContext(), o)
+}
+
+// nameHint is $USER@<short host>, or the short host alone when $USER is empty
+// (keyclient requires a hint).
+func nameHint() string {
+	if u := os.Getenv("USER"); u != "" {
+		return u + "@" + shortHost()
+	}
+	return shortHost()
 }
 
 // shortHost is the host name up to its first dot.
@@ -267,58 +278,46 @@ func keyRequestError(err error, tokenPath string, noToken error) error {
 }
 
 // newClientFor is NewClient; fresh (the key was received just now) adds the
-// one retry of the first call.
+// preflight before the client is returned.
 func newClientFor(url, token string, fresh bool, opts ...hourchdapi.ClientOption) (*hourchdapi.Client, error) {
 	c, err := NewClient(url, token, opts...)
 	if err != nil || !fresh {
 		return c, err
 	}
-	r := &firstCallRetry{next: c.Client, delay: freshKeyRetryDelay}
-	r.armed.Store(true)
-	c.Client = r
+	preflight(c)
 	return c, nil
 }
 
-// firstCallRetry wraps the client's doer for a key received just now. Only the
-// first call goes through its retry: on 401 it waits delay (or until the
-// request's context ends, then returns that 401) and sends the call once more.
-// A request whose body cannot be replayed (no GetBody) is not retried. Every
-// later call passes straight through.
-type firstCallRetry struct {
-	next  hourchdapi.HttpRequestDoer
-	delay time.Duration
-	armed atomic.Bool
-}
-
-func (r *firstCallRetry) Do(req *http.Request) (*http.Response, error) {
-	if !r.armed.CompareAndSwap(true, false) {
-		return r.next.Do(req)
+// preflight is the first call with a key received just now: GET /v1/stats
+// (authenticated, read-only, a small reply). A service that has not pulled
+// its key list since the key was issued answers 401; then preflight waits
+// freshKeyRetryDelay and sends it once more. It is best effort, bounded by
+// preflightTimeout in all, and its outcome is ignored: the caller's own calls,
+// which are never retried, report anything that is still wrong.
+func preflight(c *hourchdapi.Client) {
+	ctx, cancel := context.WithTimeout(context.Background(), preflightTimeout)
+	defer cancel()
+	if preflightStatus(ctx, c) != http.StatusUnauthorized {
+		return
 	}
-	resp, err := r.next.Do(req)
-	if err != nil || resp.StatusCode != http.StatusUnauthorized {
-		return resp, err
-	}
-	if req.Body != nil && req.Body != http.NoBody && req.GetBody == nil {
-		return resp, nil
-	}
-	t := time.NewTimer(r.delay)
+	t := time.NewTimer(freshKeyRetryDelay)
 	defer t.Stop()
 	select {
-	case <-req.Context().Done():
-		return resp, nil
+	case <-ctx.Done():
+		return
 	case <-t.C:
 	}
-	again := req.Clone(req.Context())
-	if req.GetBody != nil {
-		body, err := req.GetBody()
-		if err != nil {
-			return resp, nil
-		}
-		again.Body = body
+	preflightStatus(ctx, c)
+}
+
+func preflightStatus(ctx context.Context, c *hourchdapi.Client) int {
+	resp, err := c.GetStats(ctx)
+	if err != nil {
+		return 0
 	}
 	io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	resp.Body.Close()
-	return r.next.Do(again)
+	return resp.StatusCode
 }
 
 // APIError is a non-success response from hourchd.
