@@ -76,3 +76,26 @@ are appended, never edited in; a hook refuses rewrites.
   ("Commits: the commit \"A7: align UI prefix and proxy settings with the shared contract\"") belongs to that A7
   alignment entry, not to B6.
 - Commits: the commit "B6: align request_url rule and check-config line with the shared contract".
+
+## 2026-11-19 — B7 hourchd: key list source
+
+- Spec first: the shared `PersonalKeysStatus` schema and an optional `personal_keys` on `GET /v1/stats` (present
+  only when the key list is on); spec version 0.3.0; api client regenerated. The `last_error` description is
+  double-quoted: unquoted, its commas end the value inside the YAML flow mapping and the spec does not validate.
+- hourchd: `personal_keys.url`, `token_file`, `cache_file` (required with `url`, no default), `refresh` (1m),
+  `refresh_on_miss` (5s), `allow_insecure_http` (false), through `github.com/resurgentech/keyclient` `keylist`. A
+  sub-key written while `url` is `""` is a config error. Bearer order: `tokens_file`, then `hjt_` job tokens (never
+  the list), then the list, only on routes a submitter may call; only role `submitter` is accepted, and an entry
+  that clashes with a local token by name or SHA-256 is skipped. Worker and job-only routes never consult the list.
+  `check-config` builds the source without starting it and appends ` key_list=on` (and
+  ` key_list_insecure_http=on`); `serve` starts it before the listener and logs one line. `GET /v1/healthz`
+  unchanged. Without `url`, nothing changes. Tests named after the keyclient STATES rows (K-1, K-10, K-5/K-8, R-2,
+  R-7), plus revoke, local-token collision, unknown role, worker routes and job tokens, insecure http, stats.
+  Example config, DESIGN doc ("Key list") and daemon README updated.
+- `daemon` requires `api v0.3.0` and `keyclient v0.1.1`; the `go.work` api replace moved to v0.3.0. `flow` stays on
+  `api v0.2.0`. go.sum lines for the untagged `api v0.3.0` came from a local file proxy built with
+  `zip.CreateFromVCS` from the first commit below (api unchanged after it); `GOWORK=off go mod tidy` leaves every
+  module clean.
+- Release (after review): `api/v0.3.0`, then `daemon/v0.4.0`, both on the commit that carries this entry.
+- Commits: "B7: PersonalKeysStatus on /v1/stats (spec, api)", "B7: hourchd key list source (personal_keys.url)"
+  and "B7: log".
