@@ -119,3 +119,24 @@ are appended, never edited in; a hook refuses rewrites.
   instead of a map, a syntax error; through the loader and through `check-config`'s `app.Check`). `api` unchanged.
 - Release: `api/v0.3.0` stays as planned; `daemon/v0.4.0` moves to this commit.
 - Commits: the commit "B7: a malformed tokens file never echoes a token".
+
+## 2026-11-20 — B10: flow requests a key on first use
+
+- `NewClientFromEnv`, with neither `HOURCHD_TOKEN` nor a token in the token file (missing or empty), runs
+  keyclient's `request.Ensure` for the token file, role `submitter`, tool `hourchflow/<module version>`, name hint
+  `$USER@<short host>`. New `HOURCHD_KEY_REQUEST_URL` (`EnvHourchdKeyRequestURL`) overrides the request URL;
+  otherwise hourchd's `GET /v1/key-request` is asked. With no provider the "no token" errors are unchanged.
+- Stderr a terminal: `Wait: true`, the notice on one line to stderr, the client returned. Otherwise `Wait: false`
+  and an error wrapping `*request.ErrPending` whose text is the notice, a new line, then
+  `key request pending; run this again after approving`; the next run collects the key. `ErrBusy`, denied,
+  expired, consumed and provider errors are worded as the shared tool rules and wrap keyclient's errors. It never
+  exits and never opens the approval address. With a token, nothing changes.
+- A client built right after a fresh key (`Result.Name != ""`) retries its first call once, 5 s after a `401`,
+  through a wrapper of the client's doer that is active for that call only; the wait ends with the request's
+  context. A body without `GetBody` (the streamed context upload) is not retried.
+- Tests named after keyclient STATES rows (T-1, T-7, T-10/T-16, T-15, T-17, T-22, L-13..L-16, T-8) against
+  `keyclienttest`'s provider, plus the retry's rules. README section "Requesting a key on first use".
+- `flow` requires `keyclient v0.1.1` (standard library only) and stays on `api v0.2.0`; `GOWORK=off go mod tidy`
+  leaves it clean; `go.work` unchanged.
+- Release (after review): `flow/v0.2.0`, on the commit that carries this entry.
+- Commits: "B10: flow requests a key on first use" and "B10: log".
