@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/resurgentech/keyclient/keylist"
@@ -14,6 +15,11 @@ import (
 
 	"github.com/resurgentech/hourch/daemon/internal/graph"
 )
+
+// quoted matches a backtick-quoted span, which yaml.v3 decode errors use to
+// quote the offending value. In the tokens file that value may be a token,
+// so it is redacted before the error is returned.
+var quoted = regexp.MustCompile("`[^`]*`")
 
 // Token kinds.
 const (
@@ -96,7 +102,7 @@ func LoadTokens(path string) (*Tokens, error) {
 	dec := yaml.NewDecoder(strings.NewReader(string(data)))
 	dec.KnownFields(true)
 	if err := dec.Decode(&f); err != nil {
-		return nil, fmt.Errorf("tokens file %s: %v", path, err)
+		return nil, fmt.Errorf("tokens file %s: %s", path, quoted.ReplaceAllString(err.Error(), "`<redacted>`"))
 	}
 	return NewTokens(f)
 }

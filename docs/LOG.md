@@ -108,3 +108,14 @@ are appended, never edited in; a hook refuses rewrites.
   doc write durations with a unit. `api` unchanged.
 - Release: `api/v0.3.0` stays as planned (api unchanged); `daemon/v0.4.0` moves to this commit.
 - Commits: the commit "B7: start log age in whole seconds; durations with a unit".
+
+## 2026-11-19 — B7 fix: a malformed tokens file never echoes a token
+
+- `LoadTokens` (used by `serve` and `check-config`) returned `tokens file <path>: <yaml error>`, and yaml.v3 quotes
+  the offending value in backticks: a file holding only a bare token printed its first characters, and a value
+  tagged `!!int` printed the whole token. Every backtick-quoted span of that error is now replaced with
+  `` `<redacted>` ``, as in the sibling daemons; the `tokens file <path>:` context is kept. The rest of the loader
+  prints names, paths and modes only. Test: `TestLoadTokensNeverEchoesAToken` (bare token, `!!int` value, a list
+  instead of a map, a syntax error; through the loader and through `check-config`'s `app.Check`). `api` unchanged.
+- Release: `api/v0.3.0` stays as planned; `daemon/v0.4.0` moves to this commit.
+- Commits: the commit "B7: a malformed tokens file never echoes a token".
